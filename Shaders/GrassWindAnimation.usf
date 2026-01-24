@@ -1,0 +1,158 @@
+// GrassWindAnimation.usf
+// 草叶风力动画材质函数
+// 在材质编辑器中通过 Custom 节点调用
+
+#include "/Plugin/UnrealGrass/Private/CubicBezier.ush"
+
+/**
+ * 主要的草叶风力动画函数
+ * 用于材质编辑器的 Custom 节点
+ * 
+ * 输入:
+ *   - WorldPosition: 顶点世界坐标 (float3)
+ *   - VertexHeight: 顶点高度比例 [0-1] (float)
+ *   - GrassHeight: 草叶总高度(cm) (float)
+ *   - WindStrength: 风力强度 (float)
+ *   - WindDirection: 风向 (float3)
+ *   - Time: 时间 (float)
+ * 
+ * 输出:
+ *   - return: 偏移量 (float3)，连接到 WPO
+ */
+float3 GrassWindOffset(
+    float3 WorldPosition,
+    float VertexHeight,
+    float GrassHeight,
+    float WindStrength,
+    float3 WindDirection,
+    float Time)
+{
+    // 归一化风向
+    WindDirection = normalize(WindDirection);
+    
+    // 计算波动频率（添加空间变化避免所有草同步）
+    float spatialVariation = frac(WorldPosition.x * 0.01 + WorldPosition.y * 0.01);
+    float frequency = 2.0 + spatialVariation * 1.5;
+    
+    // 使用贝塞尔曲线计算弯曲后的位置
+    float3 bentPosition = GrassBendDynamic(
+        WorldPosition,
+        VertexHeight,
+        GrassHeight,
+        WindStrength,
+        WindDirection,
+        Time,
+        frequency,
+        0.7  // 弹性恢复系数
+    );
+    
+    // 返回偏移量（不是绝对位置）
+    return bentPosition - WorldPosition;
+}
+
+/**
+ * 简化版草叶风力动画（性能优化）
+ * 适合大量草地实例
+ */
+float3 GrassWindOffsetSimple(
+    float3 WorldPosition,
+    float VertexHeight,
+    float GrassHeight,
+    float WindStrength,
+    float3 WindDirection,
+    float Time)
+{
+    WindDirection = normalize(WindDirection);
+    
+    // 空间变化
+    float spatialVariation = frac(WorldPosition.x * 0.01 + WorldPosition.y * 0.01);
+    
+    // 简单正弦波动画
+    float wave = sin(Time * 2.0 + spatialVariation * 6.28);
+    float bend = WindStrength * wave * VertexHeight * VertexHeight;
+    
+    // 计算简化的弯曲
+    float3 offset = WindDirection * bend;
+    offset += float3(0, 0, -bend * 0.3); // 添加垂直压缩
+    
+    return offset;
+}
+
+/**
+ * 互动式草叶弯曲
+ * 当角色靠近时产生弯曲效果
+ */
+float3 GrassInteractionOffset(
+    float3 WorldPosition,
+    float VertexHeight,
+    float GrassHeight,
+    float3 PlayerPosition,
+    float InteractionRadius,
+    float InteractionStrength)
+{
+    // 计算到玩家的距离（只考虑XY平面）
+    float2 toPlayer = PlayerPosition.xy - WorldPosition.xy;
+    float distance = length(toPlayer);
+    
+    // 如果在交互半径内
+    if (distance < InteractionRadius)
+    {
+        // 计算衰减
+        float falloff = 1.0 - saturate(distance / InteractionRadius);
+        falloff = falloff * falloff; // 平方衰减
+        
+        // 弯曲方向（远离玩家）
+        float2 bendDir = normalize(WorldPosition.xy - PlayerPosition.xy);
+        
+        // 计算弯曲量
+        float bendAmount = InteractionStrength * falloff * VertexHeight * VertexHeight;
+        
+        // 返回偏移
+        float3 offset;
+        offset.x = bendDir.x * bendAmount;
+        offset.y = bendDir.y * bendAmount;
+        offset.z = -bendAmount * 0.5; // 向下压
+        
+        return offset;
+    }
+    
+    return float3(0, 0, 0);
+}
+
+/**
+ * 组合风力和交互的草叶动画
+ */
+float3 GrassAnimationCombined(
+    float3 WorldPosition,
+    float VertexHeight,
+    float GrassHeight,
+    float WindStrength,
+    float3 WindDirection,
+    float Time,
+    float3 PlayerPosition,
+    float InteractionRadius,
+    float InteractionStrength)
+{
+    // 风力偏移
+    float3 windOffset = GrassWindOffset(
+        WorldPosition,
+        VertexHeight,
+        GrassHeight,
+        WindStrength,
+        WindDirection,
+        Time
+    );
+    
+    // 交互偏移
+    float3 interactionOffset = GrassInteractionOffset(
+        WorldPosition,
+        VertexHeight,
+        GrassHeight,
+        PlayerPosition,
+        InteractionRadius,
+        InteractionStrength
+    );
+    
+    // 组合两种效果
+    return windOffset + interactionOffset;
+}

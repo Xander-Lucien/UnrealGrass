@@ -62,6 +62,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grass|Settings")
 	bool bAutoUpdate = true;
 
+	// ²ÝÒ¶²ÄÖÊ
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grass|Material")
+	UMaterialInterface* GrassMaterial = nullptr;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void OnConstruction(const FTransform& Transform) override;

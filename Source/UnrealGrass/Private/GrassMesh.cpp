@@ -296,8 +296,11 @@ void AGrassMesh::UpdateMesh()
 		true                        // 创建碰撞
 	);
 	
-	// 设置材质属性
-	ProceduralMesh->SetMaterial(0, nullptr); // 使用默认材质，可以在编辑器中设置
+	// 应用材质（如果已设置）
+	if (GrassMaterial)
+	{
+		ProceduralMesh->SetMaterial(0, GrassMaterial);
+	}
 }
 
 void AGrassMesh::ExportToStaticMesh()
