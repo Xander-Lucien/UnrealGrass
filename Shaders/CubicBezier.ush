@@ -1,0 +1,213 @@
+// CubicBezier.ush
+// 三阶贝塞尔曲线工具函数
+// 用于草叶顶点动画和程序化形变
+
+#pragma once
+
+/**
+ * 计算三阶贝塞尔曲线上的点
+ * @param P0 - 起点
+ * @param P1 - 第一个控制点
+ * @param P2 - 第二个控制点
+ * @param P3 - 终点
+ * @param t - 参数 [0, 1]，0=起点，1=终点
+ * @return 曲线上的点
+ */
+float3 CubicBezier(float3 P0, float3 P1, float3 P2, float3 P3, float t)
+{
+    // 三阶贝塞尔公式: B(t) = (1-t)?P0 + 3(1-t)?tP1 + 3(1-t)t?P2 + t?P3
+    float t2 = t * t;
+    float t3 = t2 * t;
+    float mt = 1.0 - t;
+    float mt2 = mt * mt;
+    float mt3 = mt2 * mt;
+    
+    return mt3 * P0 + 3.0 * mt2 * t * P1 + 3.0 * mt * t2 * P2 + t3 * P3;
+}
+
+/**
+ * 计算三阶贝塞尔曲线的切线方向（未归一化）
+ * @param P0 - 起点
+ * @param P1 - 第一个控制点
+ * @param P2 - 第二个控制点
+ * @param P3 - 终点
+ * @param t - 参数 [0, 1]
+ * @return 曲线在该点的切线方向（未归一化）
+ */
+float3 CubicBezierTangent(float3 P0, float3 P1, float3 P2, float3 P3, float t)
+{
+    // 贝塞尔曲线的导数: B'(t) = 3(1-t)?(P1-P0) + 6(1-t)t(P2-P1) + 3t?(P3-P2)
+    float t2 = t * t;
+    float mt = 1.0 - t;
+    float mt2 = mt * mt;
+    
+    return 3.0 * mt2 * (P1 - P0) + 6.0 * mt * t * (P2 - P1) + 3.0 * t2 * (P3 - P2);
+}
+
+/**
+ * 计算三阶贝塞尔曲线的归一化切线方向
+ */
+float3 CubicBezierTangentNormalized(float3 P0, float3 P1, float3 P2, float3 P3, float t)
+{
+    float3 tangent = CubicBezierTangent(P0, P1, P2, P3, t);
+    return normalize(tangent);
+}
+
+/**
+ * 优化的三阶贝塞尔曲线计算（使用德卡斯特里奥算法）
+ * 更适合需要同时计算多个点的情况
+ */
+float3 CubicBezierDeCasteljau(float3 P0, float3 P1, float3 P2, float3 P3, float t)
+{
+    // 第一层插值
+    float3 Q0 = lerp(P0, P1, t);
+    float3 Q1 = lerp(P1, P2, t);
+    float3 Q2 = lerp(P2, P3, t);
+    
+    // 第二层插值
+    float3 R0 = lerp(Q0, Q1, t);
+    float3 R1 = lerp(Q1, Q2, t);
+    
+    // 第三层插值（最终结果）
+    return lerp(R0, R1, t);
+}
+
+/**
+ * 二次贝塞尔曲线（可选，较简单的曲线）
+ * @param P0 - 起点
+ * @param P1 - 控制点
+ * @param P2 - 终点
+ * @param t - 参数 [0, 1]
+ */
+float3 QuadraticBezier(float3 P0, float3 P1, float3 P2, float t)
+{
+    float mt = 1.0 - t;
+    return mt * mt * P0 + 2.0 * mt * t * P1 + t * t * P2;
+}
+
+/**
+ * 草叶弯曲：使用贝塞尔曲线计算草叶顶点的弯曲位置
+ * @param BasePosition - 草叶底部位置（世界空间）
+ * @param VertexHeight - 当前顶点的高度比例 [0, 1]，0=底部，1=顶部
+ * @param GrassHeight - 草叶总高度
+ * @param BendAmount - 弯曲强度
+ * @param BendDirection - 弯曲方向（归一化，通常是风向）
+ * @return 弯曲后的顶点位置
+ */
+float3 GrassBendBezier(float3 BasePosition, float VertexHeight, float GrassHeight, float BendAmount, float3 BendDirection)
+{
+    // P0: 底部（固定）
+    float3 P0 = BasePosition;
+    
+    // P3: 自然顶部位置（无弯曲）
+    float3 P3 = BasePosition + float3(0, 0, GrassHeight);
+    
+    // P1, P2: 控制点，根据弯曲方向和强度计算
+    // 使用非线性的弯曲分布，使草叶底部较直，顶部弯曲更明显
+    float bend1 = BendAmount * 0.3;  // 第一个控制点弯曲较小
+    float bend2 = BendAmount * 0.8;  // 第二个控制点弯曲较大
+    
+    float3 P1 = BasePosition + float3(0, 0, GrassHeight * 0.33) + BendDirection * bend1;
+    float3 P2 = BasePosition + float3(0, 0, GrassHeight * 0.66) + BendDirection * bend2;
+    
+    // 使用贝塞尔曲线计算弯曲后的位置
+    return CubicBezier(P0, P1, P2, P3, VertexHeight);
+}
+
+/**
+ * 改进的草叶弯曲：考虑风力衰减和弹性恢复
+ * @param BasePosition - 草叶底部位置
+ * @param VertexHeight - 顶点高度比例 [0, 1]
+ * @param GrassHeight - 草叶总高度
+ * @param WindStrength - 风力强度
+ * @param WindDirection - 风向
+ * @param Time - 时间（用于动画）
+ * @param Frequency - 摆动频率
+ * @param SpringBack - 弹性恢复系数
+ * @return 弯曲后的顶点位置
+ */
+float3 GrassBendDynamic(
+    float3 BasePosition, 
+    float VertexHeight, 
+    float GrassHeight, 
+    float WindStrength, 
+    float3 WindDirection,
+    float Time,
+    float Frequency,
+    float SpringBack)
+{
+    // 基础弯曲量（随时间波动）
+    float wave = sin(Time * Frequency);
+    float bendAmount = WindStrength * (1.0 + wave * 0.3);
+    
+    // 顶点高度的影响因子（底部不动，顶部弯曲最大）
+    float heightFactor = VertexHeight * VertexHeight; // 平方衰减
+    
+    // 弹性恢复（模拟草的刚性）
+    float springFactor = lerp(1.0, SpringBack, VertexHeight);
+    bendAmount *= springFactor;
+    
+    // 贝塞尔控制点
+    float3 P0 = BasePosition;
+    float3 P3 = BasePosition + float3(0, 0, GrassHeight);
+    
+    // 动态控制点，考虑高度因子
+    float bendCurve1 = bendAmount * heightFactor * 0.2;
+    float bendCurve2 = bendAmount * heightFactor * 0.7;
+    
+    float3 P1 = BasePosition + float3(0, 0, GrassHeight * 0.33) + WindDirection * bendCurve1;
+    float3 P2 = BasePosition + float3(0, 0, GrassHeight * 0.66) + WindDirection * bendCurve2;
+    
+    return CubicBezier(P0, P1, P2, P3, VertexHeight);
+}
+
+/**
+ * 草叶旋转弯曲：模拟草叶在风中的旋转和扭曲
+ * @param BasePosition - 草叶底部位置
+ * @param VertexHeight - 顶点高度比例
+ * @param GrassHeight - 草叶总高度
+ * @param BendAmount - 弯曲强度
+ * @param BendDirection - 弯曲方向
+ * @param TwistAmount - 扭曲角度（弧度）
+ * @return 弯曲并扭曲后的顶点位置
+ */
+float3 GrassBendWithTwist(
+    float3 BasePosition, 
+    float VertexHeight, 
+    float GrassHeight, 
+    float BendAmount, 
+    float3 BendDirection,
+    float TwistAmount)
+{
+    // 先计算贝塞尔弯曲
+    float3 bentPosition = GrassBendBezier(BasePosition, VertexHeight, GrassHeight, BendAmount, BendDirection);
+    
+    // 计算扭曲（绕Z轴旋转）
+    float twistAngle = TwistAmount * VertexHeight; // 顶部扭曲最大
+    float cosAngle = cos(twistAngle);
+    float sinAngle = sin(twistAngle);
+    
+    // 相对于底部的偏移
+    float3 offset = bentPosition - BasePosition;
+    
+    // 应用旋转（只旋转XY平面）
+    float3 rotatedOffset;
+    rotatedOffset.x = offset.x * cosAngle - offset.y * sinAngle;
+    rotatedOffset.y = offset.x * sinAngle + offset.y * cosAngle;
+    rotatedOffset.z = offset.z;
+    
+    return BasePosition + rotatedOffset;
+}
+
+/**
+ * 简化的草叶弯曲（性能优化版本）
+ * 使用近似算法而非完整的贝塞尔曲线
+ */
+float3 GrassBendSimple(float3 BasePosition, float VertexHeight, float GrassHeight, float BendAmount, float3 BendDirection)
+{
+    // 使用平方曲线近似贝塞尔弯曲
+    float curve = VertexHeight * VertexHeight;
+    float3 bend = BendDirection * (BendAmount * curve);
+    
+    return BasePosition + float3(0, 0, GrassHeight * VertexHeight) + bend;
+}

@@ -26,9 +26,13 @@ public class UnrealGrass : ModuleRules
 			new string[]
 			{
 				"Core",
+				"ProceduralMeshComponent",
+				"RenderCore",
+				"RHI",
 				// ... add other public dependencies that you statically link with here ...
 			}
 			);
+
 			
 		
 		PrivateDependencyModuleNames.AddRange(
