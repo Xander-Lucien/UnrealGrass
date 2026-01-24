@@ -1,0 +1,41 @@
+# Unreal Engine Plugin Generated Files
+
+# Binaries
+Binaries/
+
+# Intermediate files
+Intermediate/
+
+# Saved files
+Saved/
+
+# DerivedDataCache
+DerivedDataCache/
+
+# Visual Studio files
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+.vs/
+
+# Rider files
+.idea/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Build files
+*.pdb
+*.obj
+*.lib
+*.exp
+
+# Crash reports
+CrashReportClient/
