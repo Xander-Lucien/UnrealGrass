@@ -29,7 +29,8 @@ public class UnrealGrass : ModuleRules
 				"ProceduralMeshComponent",
 				"RenderCore",
 				"RHI",
-				"Projects",  // ÓÃÓÚ IPluginManager
+				"Projects",
+				"Renderer",  // Compute Shader Utils
 				// ... add other public dependencies that you statically link with here ...
 			}
 			);

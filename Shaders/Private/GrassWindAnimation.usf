@@ -1,23 +1,102 @@
 // GrassWindAnimation.usf
-// ²İÒ¶·çÁ¦¶¯»­²ÄÖÊº¯Êı
-// ÔÚ²ÄÖÊ±à¼­Æ÷ÖĞÍ¨¹ı Custom ½Úµãµ÷ÓÃ
+// è‰å¶é£åŠ›åŠ¨ç”»æè´¨å‡½æ•°
+// åœ¨æè´¨ç¼–è¾‘å™¨ä¸­é€šè¿‡ Custom èŠ‚ç‚¹è°ƒç”¨
 
-#include "/Plugin/UnrealGrass/Private/CubicBezier.ush"
+#pragma once
 
 /**
- * Ö÷ÒªµÄ²İÒ¶·çÁ¦¶¯»­º¯Êı
- * ÓÃÓÚ²ÄÖÊ±à¼­Æ÷µÄ Custom ½Úµã
+ * è‰å¶é£åŠ›åŠ¨ç”» - å®Œæ•´ç‰ˆæœ¬
  * 
- * ÊäÈë:
- *   - WorldPosition: ¶¥µãÊÀ½ç×ø±ê (float3)
- *   - VertexHeight: ¶¥µã¸ß¶È±ÈÀı [0-1] (float)
- *   - GrassHeight: ²İÒ¶×Ü¸ß¶È(cm) (float)
- *   - WindStrength: ·çÁ¦Ç¿¶È (float)
- *   - WindDirection: ·çÏò (float3)
- *   - Time: Ê±¼ä (float)
+ * è¾“å…¥:
+ *   - WorldPosition: é¡¶ç‚¹ä¸–ç•Œåæ ‡ (float3)
+ *   - VertexHeight: é¡¶ç‚¹é«˜åº¦æ¯”ä¾‹ [0-1] (float)ï¼Œ0=åº•éƒ¨ï¼Œ1=é¡¶éƒ¨
+ *   - GrassHeight: è‰å¶æ€»é«˜åº¦(cm) (float)
+ *   - WindStrength: é£åŠ›å¼ºåº¦ (float)ï¼Œå»ºè®®å€¼ 0.1-1.0
+ *   - WindDirection: é£å‘ (float3)
+ *   - Time: æ—¶é—´ (float)
  * 
- * Êä³ö:
- *   - return: Æ«ÒÆÁ¿ (float3)£¬Á¬½Óµ½ WPO
+ * è¾“å‡º:
+ *   - return: åç§»é‡ (float3)ï¼Œè¿æ¥åˆ° WPO
+ */
+float3 GrassWindOffsetFull(
+    float3 WorldPosition,
+    float VertexHeight,
+    float GrassHeight,
+    float WindStrength,
+    float3 WindDirection,
+    float Time)
+{
+    // å½’ä¸€åŒ–é£å‘
+    float3 windDir = normalize(WindDirection);
+    
+    // ç©ºé—´å˜åŒ–ï¼Œé¿å…æ‰€æœ‰è‰åŒæ­¥æ‘†åŠ¨
+    float spatialVariation = frac(WorldPosition.x * 0.01 + WorldPosition.y * 0.01);
+    
+    // æ—¶é—´æ³¢åŠ¨
+    float wave = sin(Time * 2.0 + spatialVariation * 6.28);
+    
+    // å¼¯æ›²é‡ï¼šåº•éƒ¨ä¸åŠ¨ï¼Œé¡¶éƒ¨å¼¯æ›²æœ€å¤§ï¼ˆä½¿ç”¨å¹³æ–¹æ›²çº¿ï¼‰
+    float heightFactor = VertexHeight * VertexHeight;
+    
+    // è®¡ç®—æ°´å¹³åç§»ï¼ˆè€ƒè™‘è‰çš„å®é™…é«˜åº¦ï¼‰
+    float bendAmount = GrassHeight * WindStrength * heightFactor * (0.5 + 0.5 * wave);
+    
+    // æ°´å¹³åç§»ï¼ˆæ²¿é£å‘ï¼‰
+    float3 offset = windDir * bendAmount;
+    
+    // å‚ç›´å‹ç¼©ï¼ˆå¼¯æ›²æ—¶è‰ä¼šå˜çŸ®ä¸€ç‚¹ï¼‰
+    offset.z -= bendAmount * 0.2 * heightFactor;
+    
+    return offset;
+}
+
+/**
+ * ç®€åŒ–ç‰ˆè‰å¶é£åŠ›åŠ¨ç”»ï¼ˆ5å‚æ•°ç‰ˆæœ¬ï¼Œä¸éœ€è¦ GrassHeightï¼‰
+ * 
+ * è¾“å…¥:
+ *   - WorldPosition: é¡¶ç‚¹ä¸–ç•Œåæ ‡ (float3)
+ *   - VertexHeight: é¡¶ç‚¹é«˜åº¦æ¯”ä¾‹ [0-1] (float)
+ *   - WindStrength: é£åŠ›å¼ºåº¦ (float)ï¼Œå»ºè®®å€¼ 10-100
+ *   - WindDirection: é£å‘ (float3)
+ *   - Time: æ—¶é—´ (float)
+ * 
+ * è¾“å‡º:
+ *   - return: åç§»é‡ (float3)ï¼Œè¿æ¥åˆ° WPO
+ */
+float3 GrassWindOffset(
+    float3 WorldPosition,
+    float VertexHeight,
+    float WindStrength,
+    float3 WindDirection,
+    float Time)
+{
+    // å½’ä¸€åŒ–é£å‘
+    float3 windDir = normalize(WindDirection);
+    
+    // ç©ºé—´å˜åŒ–ï¼Œé¿å…æ‰€æœ‰è‰åŒæ­¥æ‘†åŠ¨
+    float spatialVariation = frac(WorldPosition.x * 0.1 + WorldPosition.y * 0.1);
+    
+    // æ—¶é—´æ³¢åŠ¨
+    float wave = sin(Time * 2.0 + spatialVariation * 6.28);
+    
+    // å¼¯æ›²é‡ï¼šåº•éƒ¨ä¸åŠ¨ï¼Œé¡¶éƒ¨å¼¯æ›²æœ€å¤§ï¼ˆä½¿ç”¨å¹³æ–¹æ›²çº¿ï¼‰
+    float heightFactor = VertexHeight * VertexHeight;
+    
+    // è®¡ç®—æ°´å¹³åç§»
+    float bendAmount = WindStrength * heightFactor * (0.5 + 0.5 * wave);
+    
+    // æ°´å¹³åç§»ï¼ˆæ²¿é£å‘ï¼‰
+    float3 offset = windDir * bendAmount;
+    
+    // å‚ç›´å‹ç¼©ï¼ˆå¼¯æ›²æ—¶è‰ä¼šå˜çŸ®ä¸€ç‚¹ï¼‰
+    offset.z -= bendAmount * 0.2 * heightFactor;
+    
+    return offset;
+}
+
+/**
+ * Six-parameter shim to match material calls that include GrassHeight.
+ * Keeps the simplified behavior by forwarding to the full implementation.
  */
 float3 GrassWindOffset(
     float3 WorldPosition,
@@ -27,132 +106,53 @@ float3 GrassWindOffset(
     float3 WindDirection,
     float Time)
 {
-    // ¹éÒ»»¯·çÏò
-    WindDirection = normalize(WindDirection);
-    
-    // ¼ÆËã²¨¶¯ÆµÂÊ£¨Ìí¼Ó¿Õ¼ä±ä»¯±ÜÃâËùÓĞ²İÍ¬²½£©
-    float spatialVariation = frac(WorldPosition.x * 0.01 + WorldPosition.y * 0.01);
-    float frequency = 2.0 + spatialVariation * 1.5;
-    
-    // Ê¹ÓÃ±´Èû¶ûÇúÏß¼ÆËãÍäÇúºóµÄÎ»ÖÃ
-    float3 bentPosition = GrassBendDynamic(
-        WorldPosition,
-        VertexHeight,
-        GrassHeight,
-        WindStrength,
-        WindDirection,
-        Time,
-        frequency,
-        0.7  // µ¯ĞÔ»Ö¸´ÏµÊı
-    );
-    
-    // ·µ»ØÆ«ÒÆÁ¿£¨²»ÊÇ¾ø¶ÔÎ»ÖÃ£©
-    return bentPosition - WorldPosition;
+    return GrassWindOffsetFull(WorldPosition, VertexHeight, GrassHeight, WindStrength, WindDirection, Time);
 }
 
 /**
- * ¼ò»¯°æ²İÒ¶·çÁ¦¶¯»­£¨ĞÔÄÜÓÅ»¯£©
- * ÊÊºÏ´óÁ¿²İµØÊµÀı
+ * å¸¦é¢‘ç‡æ§åˆ¶çš„è‰å¶é£åŠ›åŠ¨ç”»
  */
-float3 GrassWindOffsetSimple(
+float3 GrassWindOffsetAdvanced(
     float3 WorldPosition,
     float VertexHeight,
-    float GrassHeight,
     float WindStrength,
     float3 WindDirection,
-    float Time)
+    float Time,
+    float Frequency,
+    float Turbulence)
 {
-    WindDirection = normalize(WindDirection);
+    float3 windDir = normalize(WindDirection);
     
-    // ¿Õ¼ä±ä»¯
-    float spatialVariation = frac(WorldPosition.x * 0.01 + WorldPosition.y * 0.01);
+    // å¤šå±‚å™ªå£°å åŠ 
+    float spatialVar1 = frac(WorldPosition.x * 0.1 + WorldPosition.y * 0.1);
+    float spatialVar2 = frac(WorldPosition.x * 0.23 + WorldPosition.y * 0.17);
     
-    // ¼òµ¥ÕıÏÒ²¨¶¯»­
-    float wave = sin(Time * 2.0 + spatialVariation * 6.28);
-    float bend = WindStrength * wave * VertexHeight * VertexHeight;
+    // ä¸»æ³¢ + æ¬¡æ³¢
+    float wave1 = sin(Time * Frequency + spatialVar1 * 6.28);
+    float wave2 = sin(Time * Frequency * 1.7 + spatialVar2 * 6.28) * Turbulence;
+    float wave = wave1 + wave2 * 0.3;
     
-    // ¼ÆËã¼ò»¯µÄÍäÇú
-    float3 offset = WindDirection * bend;
-    offset += float3(0, 0, -bend * 0.3); // Ìí¼Ó´¹Ö±Ñ¹Ëõ
+    float heightFactor = VertexHeight * VertexHeight;
+    float bendAmount = WindStrength * heightFactor * (0.5 + 0.5 * wave);
+    
+    float3 offset = windDir * bendAmount;
+    offset.z -= bendAmount * 0.2 * heightFactor;
+    
+    // æ·»åŠ ä¸€ç‚¹æ¨ªå‘æ‘†åŠ¨
+    float3 perpDir = float3(-windDir.y, windDir.x, 0);
+    offset += perpDir * wave2 * WindStrength * heightFactor * 0.2;
     
     return offset;
 }
 
 /**
- * »¥¶¯Ê½²İÒ¶ÍäÇú
- * µ±½ÇÉ«¿¿½üÊ±²úÉúÍäÇúĞ§¹û
+ * æœ€ç®€å•çš„æµ‹è¯•å‡½æ•° - ç”¨äºéªŒè¯è¿æ¥æ˜¯å¦æ­£ç¡®
  */
-float3 GrassInteractionOffset(
-    float3 WorldPosition,
-    float VertexHeight,
-    float GrassHeight,
-    float3 PlayerPosition,
-    float InteractionRadius,
-    float InteractionStrength)
+float3 GrassWindTest(float VertexHeight, float Time)
 {
-    // ¼ÆËãµ½Íæ¼ÒµÄ¾àÀë£¨Ö»¿¼ÂÇXYÆ½Ãæ£©
-    float2 toPlayer = PlayerPosition.xy - WorldPosition.xy;
-    float distance = length(toPlayer);
+    // ç®€å•çš„å·¦å³æ‘†åŠ¨ï¼Œåªä¾èµ–é«˜åº¦å’Œæ—¶é—´
+    float wave = sin(Time * 3.0);
+    float heightFactor = VertexHeight * VertexHeight;
     
-    // Èç¹ûÔÚ½»»¥°ë¾¶ÄÚ
-    if (distance < InteractionRadius)
-    {
-        // ¼ÆËãË¥¼õ
-        float falloff = 1.0 - saturate(distance / InteractionRadius);
-        falloff = falloff * falloff; // Æ½·½Ë¥¼õ
-        
-        // ÍäÇú·½Ïò£¨Ô¶ÀëÍæ¼Ò£©
-        float2 bendDir = normalize(WorldPosition.xy - PlayerPosition.xy);
-        
-        // ¼ÆËãÍäÇúÁ¿
-        float bendAmount = InteractionStrength * falloff * VertexHeight * VertexHeight;
-        
-        // ·µ»ØÆ«ÒÆ
-        float3 offset;
-        offset.x = bendDir.x * bendAmount;
-        offset.y = bendDir.y * bendAmount;
-        offset.z = -bendAmount * 0.5; // ÏòÏÂÑ¹
-        
-        return offset;
-    }
-    
-    return float3(0, 0, 0);
-}
-
-/**
- * ×éºÏ·çÁ¦ºÍ½»»¥µÄ²İÒ¶¶¯»­
- */
-float3 GrassAnimationCombined(
-    float3 WorldPosition,
-    float VertexHeight,
-    float GrassHeight,
-    float WindStrength,
-    float3 WindDirection,
-    float Time,
-    float3 PlayerPosition,
-    float InteractionRadius,
-    float InteractionStrength)
-{
-    // ·çÁ¦Æ«ÒÆ
-    float3 windOffset = GrassWindOffset(
-        WorldPosition,
-        VertexHeight,
-        GrassHeight,
-        WindStrength,
-        WindDirection,
-        Time
-    );
-    
-    // ½»»¥Æ«ÒÆ
-    float3 interactionOffset = GrassInteractionOffset(
-        WorldPosition,
-        VertexHeight,
-        GrassHeight,
-        PlayerPosition,
-        InteractionRadius,
-        InteractionStrength
-    );
-    
-    // ×éºÏÁ½ÖÖĞ§¹û
-    return windOffset + interactionOffset;
+    return float3(wave * 20.0 * heightFactor, 0, 0);
 }

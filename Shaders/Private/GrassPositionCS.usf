@@ -1,0 +1,33 @@
+// GrassPositionCS.usf
+// 在 GPU 上生成草的位置
+
+#include "/Engine/Public/Platform.ush"
+
+// 输出：草的位置
+RWStructuredBuffer<float3> OutPositions;
+
+// 参数
+int GridSize;
+float Spacing;
+
+[numthreads(8, 8, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    int x = DispatchThreadId.x;
+    int y = DispatchThreadId.y;
+    
+    if (x >= GridSize || y >= GridSize)
+        return;
+    
+    // 计算位置：以原点为中心的网格
+    float HalfSize = (GridSize - 1) * Spacing * 0.5;
+    
+    float3 Position;
+    Position.x = x * Spacing - HalfSize;
+    Position.y = y * Spacing - HalfSize;
+    Position.z = 0;
+    
+    // 写入 buffer
+    int Index = y * GridSize + x;
+    OutPositions[Index] = Position;
+}

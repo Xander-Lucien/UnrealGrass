@@ -9,7 +9,7 @@
 
 void FUnrealGrassModule::StartupModule()
 {
-	// ×¢²á²å¼þµÄ×ÅÉ«Æ÷Ä¿Â¼
+	// ×¢ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É«ï¿½ï¿½Ä¿Â¼
 	FString PluginShaderDir = FPaths::Combine(IPluginManager::Get().FindPlugin(TEXT("UnrealGrass"))->GetBaseDir(), TEXT("Shaders"));
 	AddShaderSourceDirectoryMapping(TEXT("/Plugin/UnrealGrass"), PluginShaderDir);
 }
