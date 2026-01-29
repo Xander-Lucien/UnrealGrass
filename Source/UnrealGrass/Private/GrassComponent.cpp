@@ -38,6 +38,37 @@ IMPLEMENT_GLOBAL_SHADER(FGrassPositionCS, "/Plugin/UnrealGrass/Private/GrassPosi
 UGrassComponent::UGrassComponent()
 {
     PrimaryComponentTick.bCanEverTick = false;
+    // 确保组件在游戏中可见
+    bWantsInitializeComponent = true;
+}
+
+void UGrassComponent::BeginPlay()
+{
+    Super::BeginPlay();
+    
+    // 游戏开始时自动生成草地
+    if (InstanceCount == 0)
+    {
+        UE_LOG(LogTemp, Log, TEXT("GrassComponent::BeginPlay - Auto generating grass..."));
+        GenerateGrass();
+    }
+}
+
+void UGrassComponent::OnRegister()
+{
+    Super::OnRegister();
+    
+    // 编辑器中注册时，如果还没有生成数据则自动生成
+    // 这确保了在编辑器 viewport 中也能看到草地
+    if (GetWorld() && GetWorld()->IsGameWorld() == false)
+    {
+        // 仅在编辑器中，且数据为空时自动生成
+        if (InstanceCount == 0)
+        {
+            UE_LOG(LogTemp, Log, TEXT("GrassComponent::OnRegister - Auto generating grass in editor..."));
+            GenerateGrass();
+        }
+    }
 }
 
 void UGrassComponent::GenerateGrass()

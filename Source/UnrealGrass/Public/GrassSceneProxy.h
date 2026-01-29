@@ -1,11 +1,11 @@
 // GrassSceneProxy.h
-// ¼òµ¥µÄ³¡¾°´úÀí£ºÓÃ GPU Instancing »æÖÆ²İ
+// ç®€å•çš„è‰åœ°åœºæ™¯ä»£ç† GPU Instancing æ¸²æŸ“è‰
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "PrimitiveSceneProxy.h"
-#include "LocalVertexFactory.h"
+#include "GrassVertexFactory.h"
 #include "StaticMeshResources.h"
 
 class UGrassComponent;
@@ -22,17 +22,17 @@ public:
     virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
 
 private:
-    // ²İÒ¶ Mesh
+    // è‰å¶ Mesh
     FStaticMeshVertexBuffers VertexBuffers;
-    FLocalVertexFactory VertexFactory;
+    FGrassVertexFactory VertexFactory;  // ä½¿ç”¨è‡ªå®šä¹‰ Vertex Factory
     FRawStaticIndexBuffer IndexBuffer;
     int32 NumVertices = 0;
     int32 NumIndices = 0;
 
-    // ÊµÀıÊı¾İ (´Ó GPU buffer À´)
+    // å®ä¾‹æ•°æ® (ä¿æŒ SRV å¼•ç”¨)
     FShaderResourceViewRHIRef PositionBufferSRV;
     int32 InstanceCount = 0;
 
-    // ²ÄÖÊ
+    // æè´¨
     UMaterialInterface* Material = nullptr;
 };

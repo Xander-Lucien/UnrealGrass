@@ -1,0 +1,344 @@
+// GrassVertexFactory.ush
+// 简化的草地 Vertex Factory - 支持 GPU Instancing 和实例位置偏移
+
+#include "/Engine/Private/VertexFactoryCommon.ush"
+
+// ============================================================================
+// 草地实例位置缓冲区 (由 C++ FGrassVertexFactoryShaderParameters 绑定)
+// ============================================================================
+#if USE_GRASS_INSTANCING
+StructuredBuffer<float3> GrassInstancePositions;
+#endif
+
+// ============================================================================
+// 主输入结构
+// ============================================================================
+struct FVertexFactoryInput
+{
+    float4 Position : ATTRIBUTE0;
+    half3 TangentX : ATTRIBUTE1;
+    half4 TangentZ : ATTRIBUTE2;  // w = tangent basis determinant sign
+    half4 Color : ATTRIBUTE3;
+    
+#if NUM_MATERIAL_TEXCOORDS_VERTEX > 0
+    float2 TexCoord0 : ATTRIBUTE4;
+#endif
+
+    VF_GPUSCENE_DECLARE_INPUT_BLOCK(13)
+    VF_INSTANCED_STEREO_DECLARE_INPUT_BLOCK()
+    VF_MOBILE_MULTI_VIEW_DECLARE_INPUT_BLOCK()
+    
+    uint VertexId : SV_VertexID;
+    uint InstanceId : SV_InstanceID;
+};
+
+// ============================================================================
+// Position Only 输入结构 (用于深度 Pass)
+// ============================================================================
+struct FPositionOnlyVertexFactoryInput
+{
+    float4 Position : ATTRIBUTE0;
+    
+    VF_GPUSCENE_DECLARE_INPUT_BLOCK(1)
+    VF_INSTANCED_STEREO_DECLARE_INPUT_BLOCK()
+    VF_MOBILE_MULTI_VIEW_DECLARE_INPUT_BLOCK()
+    
+    uint VertexId : SV_VertexID;
+    uint InstanceId : SV_InstanceID;
+};
+
+// ============================================================================
+// Position And Normal Only 输入结构 (用于阴影深度 Pass)
+// ============================================================================
+struct FPositionAndNormalOnlyVertexFactoryInput
+{
+    float4 Position : ATTRIBUTE0;
+    float4 Normal : ATTRIBUTE2;
+    
+    VF_GPUSCENE_DECLARE_INPUT_BLOCK(1)
+    VF_INSTANCED_STEREO_DECLARE_INPUT_BLOCK()
+    VF_MOBILE_MULTI_VIEW_DECLARE_INPUT_BLOCK()
+    
+    uint VertexId : SV_VertexID;
+    uint InstanceId : SV_InstanceID;
+};
+
+// ============================================================================
+// VS -> PS 插值结构
+// ============================================================================
+struct FVertexFactoryInterpolantsVSToPS
+{
+    TANGENTTOWORLD_INTERPOLATOR_BLOCK
+    
+#if NUM_TEX_COORD_INTERPOLATORS
+    float4 TexCoords[(NUM_TEX_COORD_INTERPOLATORS + 1) / 2] : PACKED_TEXCOORDS;
+#endif
+
+    float4 Color : TEXCOORD3;
+    
+#if INSTANCED_STEREO
+    nointerpolation uint EyeIndex : PACKED_EYE_INDEX;
+#endif
+
+#if VF_USE_PRIMITIVE_SCENE_DATA
+    nointerpolation uint PrimitiveId : PRIMITIVE_ID;
+#endif
+};
+
+// ============================================================================
+// 中间数据结构
+// ============================================================================
+struct FVertexFactoryIntermediates
+{
+    float4 Color;
+    FSceneDataIntermediates SceneData;
+    float3x3 TangentToLocal;
+    float3x3 TangentToWorld;
+};
+
+FPrimitiveSceneData GetPrimitiveData(FVertexFactoryIntermediates Intermediates)
+{
+    return Intermediates.SceneData.Primitive;
+}
+
+// ============================================================================
+// 辅助函数
+// ============================================================================
+
+// 获取草地实例位置偏移
+float3 GetGrassInstanceOffset(uint InstanceId)
+{
+#if USE_GRASS_INSTANCING
+    return GrassInstancePositions[InstanceId];
+#else
+    return float3(0, 0, 0);
+#endif
+}
+
+// 计算切线空间基础
+float3x3 CalcTangentBasis(half3 TangentX, half4 TangentZ)
+{
+    half3 TangentXN = TangentBias(TangentX);
+    half4 TangentZN = TangentBias(TangentZ);
+    half3 TangentY = cross(TangentZN.xyz, TangentXN) * TangentZN.w;
+    return float3x3(TangentXN, TangentY, TangentZN.xyz);
+}
+
+// ============================================================================
+// Vertex Factory 核心函数
+// ============================================================================
+
+FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput Input)
+{
+    FVertexFactoryIntermediates Intermediates;
+    Intermediates.SceneData = VF_GPUSCENE_GET_INTERMEDIATES(Input);
+    Intermediates.Color = Input.Color FCOLOR_COMPONENT_SWIZZLE;
+    Intermediates.TangentToLocal = CalcTangentBasis(Input.TangentX, Input.TangentZ);
+    Intermediates.TangentToWorld = mul(Intermediates.TangentToLocal, GetLocalToWorld3x3());
+    return Intermediates;
+}
+
+// 主要的 World Position 计算 (带实例偏移)
+float4 VertexFactoryGetWorldPosition(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates)
+{
+    FDFMatrix LocalToWorld = GetPrimitiveDataFromUniformBuffer().LocalToWorld;
+    float4 WorldPos = TransformLocalToTranslatedWorld(Input.Position.xyz, LocalToWorld);
+    
+    // 添加实例位置偏移
+#if USE_GRASS_INSTANCING
+    float3 InstanceOffset = GetGrassInstanceOffset(Input.InstanceId);
+    WorldPos.xyz += InstanceOffset;
+#endif
+    
+    return WorldPos;
+}
+
+// Position Only 版本 (用于深度 Pass)
+float4 VertexFactoryGetWorldPosition(FPositionOnlyVertexFactoryInput Input)
+{
+    FDFMatrix LocalToWorld = GetPrimitiveDataFromUniformBuffer().LocalToWorld;
+    float4 WorldPos = TransformLocalToTranslatedWorld(Input.Position.xyz, LocalToWorld);
+    
+#if USE_GRASS_INSTANCING
+    float3 InstanceOffset = GetGrassInstanceOffset(Input.InstanceId);
+    WorldPos.xyz += InstanceOffset;
+#endif
+    
+    return WorldPos;
+}
+
+// Position And Normal Only 版本 (用于阴影深度 Pass)
+float4 VertexFactoryGetWorldPosition(FPositionAndNormalOnlyVertexFactoryInput Input)
+{
+    FDFMatrix LocalToWorld = GetPrimitiveDataFromUniformBuffer().LocalToWorld;
+    float4 WorldPos = TransformLocalToTranslatedWorld(Input.Position.xyz, LocalToWorld);
+    
+#if USE_GRASS_INSTANCING
+    float3 InstanceOffset = GetGrassInstanceOffset(Input.InstanceId);
+    WorldPos.xyz += InstanceOffset;
+#endif
+    
+    return WorldPos;
+}
+
+float3 VertexFactoryGetWorldNormal(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates)
+{
+    return Intermediates.TangentToWorld[2];
+}
+
+float3 VertexFactoryGetWorldNormal(FPositionAndNormalOnlyVertexFactoryInput Input)
+{
+    FDFMatrix LocalToWorld = GetPrimitiveDataFromUniformBuffer().LocalToWorld;
+    float3 InvScale = GetPrimitiveDataFromUniformBuffer().InvNonUniformScale;
+    return RotateLocalToWorld(Input.Normal.xyz, LocalToWorld, InvScale);
+}
+
+float4 VertexFactoryGetRasterizedWorldPosition(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates, float4 InWorldPosition)
+{
+    return InWorldPosition;
+}
+
+float3 VertexFactoryGetPositionForVertexLighting(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates, float3 TranslatedWorldPosition)
+{
+    return TranslatedWorldPosition;
+}
+
+float4 VertexFactoryGetPreviousWorldPosition(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates)
+{
+    // 草地不需要运动模糊，返回当前位置
+    return VertexFactoryGetWorldPosition(Input, Intermediates);
+}
+
+float3x3 VertexFactoryGetTangentToLocal(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates)
+{
+    return Intermediates.TangentToLocal;
+}
+
+// ============================================================================
+// 材质参数
+// ============================================================================
+
+FMaterialPixelParameters GetMaterialPixelParameters(FVertexFactoryInterpolantsVSToPS Interpolants, float4 SvPosition)
+{
+    FMaterialPixelParameters Result = MakeInitializedMaterialPixelParameters();
+    
+#if NUM_TEX_COORD_INTERPOLATORS
+    UNROLL
+    for (int UVIndex = 0; UVIndex < NUM_TEX_COORD_INTERPOLATORS / 2; ++UVIndex)
+    {
+        Result.TexCoords[(UVIndex * 2) + 0] = Interpolants.TexCoords[UVIndex].xy;
+        Result.TexCoords[(UVIndex * 2) + 1] = Interpolants.TexCoords[UVIndex].zw;
+    }
+    #if (NUM_TEX_COORD_INTERPOLATORS & 1) == 1
+        Result.TexCoords[NUM_TEX_COORD_INTERPOLATORS - 1] = Interpolants.TexCoords[NUM_TEX_COORD_INTERPOLATORS / 2].xy;
+    #endif
+#endif
+
+    Result.VertexColor = Interpolants.Color;
+    
+    half3 TangentToWorld0 = Interpolants.TangentToWorld0.xyz;
+    half4 TangentToWorld2 = Interpolants.TangentToWorld2;
+    Result.TangentToWorld = AssembleTangentToWorld(TangentToWorld0, TangentToWorld2);
+    Result.UnMirrored = 1;
+    Result.TwoSidedSign = 1;
+    
+    return Result;
+}
+
+// 5参数版本 (引擎期望的签名)
+FMaterialVertexParameters GetMaterialVertexParameters(
+    FVertexFactoryInput Input,
+    FVertexFactoryIntermediates Intermediates,
+    float3 WorldPosition,
+    float3x3 TangentToLocal,
+    bool bIsPreviousFrame = false)
+{
+    FMaterialVertexParameters Result = MakeInitializedMaterialVertexParameters();
+    Result.SceneData = Intermediates.SceneData;
+    Result.WorldPosition = WorldPosition;
+    Result.VertexColor = Intermediates.Color;
+    Result.TangentToWorld = mul(TangentToLocal, GetLocalToWorld3x3());
+    Result.PreSkinnedPosition = Input.Position.xyz;
+    Result.PreSkinnedNormal = TangentToLocal[2].xyz;
+    
+#if NUM_MATERIAL_TEXCOORDS_VERTEX > 0
+    Result.TexCoords[0] = Input.TexCoord0;
+#endif
+
+#if ENABLE_NEW_HLSL_GENERATOR
+    EvaluateVertexMaterialAttributes(Result);
+#endif
+    Result.LWCData = MakeMaterialLWCData(Result);
+    
+    return Result;
+}
+
+// ============================================================================
+// 插值数据
+// ============================================================================
+
+FVertexFactoryInterpolantsVSToPS VertexFactoryGetInterpolantsVSToPS(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates, FMaterialVertexParameters VertexParameters)
+{
+    FVertexFactoryInterpolantsVSToPS Interpolants;
+    
+#if NUM_TEX_COORD_INTERPOLATORS
+    float2 CustomizedUVs[NUM_TEX_COORD_INTERPOLATORS];
+    GetMaterialCustomizedUVs(VertexParameters, CustomizedUVs);
+    GetCustomInterpolators(VertexParameters, CustomizedUVs);
+    
+    UNROLL
+    for (int UVIndex = 0; UVIndex < NUM_TEX_COORD_INTERPOLATORS / 2; ++UVIndex)
+    {
+        Interpolants.TexCoords[UVIndex].xy = CustomizedUVs[UVIndex * 2 + 0];
+        Interpolants.TexCoords[UVIndex].zw = CustomizedUVs[UVIndex * 2 + 1];
+    }
+    #if (NUM_TEX_COORD_INTERPOLATORS & 1) == 1
+        Interpolants.TexCoords[NUM_TEX_COORD_INTERPOLATORS / 2].xy = CustomizedUVs[NUM_TEX_COORD_INTERPOLATORS - 1];
+        Interpolants.TexCoords[NUM_TEX_COORD_INTERPOLATORS / 2].zw = 0.0f;
+    #endif
+#endif
+
+    Interpolants.Color = Intermediates.Color;
+    
+    Interpolants.TangentToWorld0.xyz = Intermediates.TangentToWorld[0];
+    Interpolants.TangentToWorld0.w = 0;
+    Interpolants.TangentToWorld2 = float4(Intermediates.TangentToWorld[2], sign(determinant(Intermediates.TangentToLocal)));
+    
+#if INSTANCED_STEREO
+    Interpolants.EyeIndex = GetEyeIndexFromVF(Input);
+#endif
+
+#if VF_USE_PRIMITIVE_SCENE_DATA
+    Interpolants.PrimitiveId = Intermediates.SceneData.PrimitiveId;
+#endif
+    
+    return Interpolants;
+}
+
+// ============================================================================
+// 其他必需接口
+// ============================================================================
+
+float4 VertexFactoryGetTranslatedPrimitiveVolumeBounds(FVertexFactoryInterpolantsVSToPS Interpolants)
+{
+    return 0;
+}
+
+uint VertexFactoryGetPrimitiveId(FVertexFactoryInterpolantsVSToPS Interpolants)
+{
+#if VF_USE_PRIMITIVE_SCENE_DATA
+    return Interpolants.PrimitiveId;
+#else
+    return 0;
+#endif
+}
+
+#if VF_USE_PRIMITIVE_SCENE_DATA
+void SetPrimitiveId(inout FVertexFactoryInterpolantsVSToPS Interpolants, uint PrimitiveId)
+{
+    Interpolants.PrimitiveId = PrimitiveId;
+}
+#endif
+
+// Include 默认接口实现
+#include "/Engine/Private/VertexFactoryDefaultInterface.ush"

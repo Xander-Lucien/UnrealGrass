@@ -1,5 +1,5 @@
 // GrassSceneProxy.cpp
-// GPU Instancing »æÖÆ²İ
+// GPU Instancing æ¸²æŸ“è‰
 
 #include "GrassSceneProxy.h"
 #include "GrassComponent.h"
@@ -21,7 +21,10 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
         Material = UMaterial::GetDefaultMaterial(MD_Surface);
     }
 
-    // ´´½¨Ò»¸öÕı³£´óĞ¡µÄÈı½ÇĞÎ²İÒ¶
+    // è®¾ç½®å®ä¾‹ä½ç½®ç¼“å†²åŒº SRV åˆ° Vertex Factory
+    VertexFactory.SetInstancePositionSRV(PositionBufferSRV.GetReference(), InstanceCount);
+
+    // åˆ›å»ºä¸€ä¸ªç®€å•çš„ä¸‰è§’å½¢è‰å¶ (åŒé¢)
     TArray<FVector3f> Positions = {
         FVector3f(-5, 0, 0),
         FVector3f(5, 0, 0),
@@ -51,9 +54,10 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
 
     IndexBuffer.SetIndices(Indices, EIndexBufferStride::Force32Bit);
 
+    // éœ€è¦æ•è·åŸå§‹æŒ‡é’ˆç”¨äº render command
     FStaticMeshVertexBuffers* VertexBuffersPtr = &VertexBuffers;
     FRawStaticIndexBuffer* IndexBufferPtr = &IndexBuffer;
-    FLocalVertexFactory* VertexFactoryPtr = &VertexFactory;
+    FGrassVertexFactory* VertexFactoryPtr = &VertexFactory;
     
     ENQUEUE_RENDER_COMMAND(InitGrassResources)(
         [VertexBuffersPtr, IndexBufferPtr, VertexFactoryPtr](FRHICommandListImmediate& RHICmdList)
@@ -115,12 +119,15 @@ void FGrassSceneProxy::GetDynamicMeshElements(
     uint32 VisibilityMap,
     FMeshElementCollector& Collector) const
 {
+    if (InstanceCount == 0)
+        return;
+
     for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
     {
         if (!(VisibilityMap & (1 << ViewIndex)))
             continue;
 
-        // Ê¹ÓÃ GPU Instancing äÖÈ¾ËùÓĞ²İÒ¶ÊµÀı
+        // ä½¿ç”¨ GPU Instancing æ¸²æŸ“æ‰€æœ‰è‰å¶å®ä¾‹
         FMeshBatch& Mesh = Collector.AllocateMesh();
         Mesh.VertexFactory = &VertexFactory;
         Mesh.MaterialRenderProxy = Material->GetRenderProxy();
@@ -129,7 +136,7 @@ void FGrassSceneProxy::GetDynamicMeshElements(
         Mesh.bCanApplyViewModeOverrides = true;
         Mesh.ReverseCulling = false;
         Mesh.CastShadow = false;
-        Mesh.bDisableBackfaceCulling = true;
+        Mesh.bDisableBackfaceCulling = true;  // åŒé¢æ¸²æŸ“è‰å¶
 
         FMeshBatchElement& Element = Mesh.Elements[0];
         Element.IndexBuffer = &IndexBuffer;
@@ -137,7 +144,7 @@ void FGrassSceneProxy::GetDynamicMeshElements(
         Element.NumPrimitives = 1;
         Element.MinVertexIndex = 0;
         Element.MaxVertexIndex = NumVertices - 1;
-        Element.NumInstances = InstanceCount;  // äÖÈ¾ËùÓĞÊµÀı£¡
+        Element.NumInstances = InstanceCount;  // GPU Instancing: æ¸²æŸ“æ‰€æœ‰å®ä¾‹
         Element.PrimitiveUniformBuffer = GetUniformBuffer();
 
         Collector.AddMesh(ViewIndex, Mesh);

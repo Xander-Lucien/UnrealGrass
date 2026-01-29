@@ -27,6 +27,10 @@ public:
     UFUNCTION(CallInEditor, Category = "Grass")
     void GenerateGrass();
 
+    // 生命周期函数
+    virtual void BeginPlay() override;
+    virtual void OnRegister() override;
+
     virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
     virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
     
