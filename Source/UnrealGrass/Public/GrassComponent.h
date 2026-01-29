@@ -21,6 +21,9 @@ public:
     UPROPERTY(EditAnywhere, Category = "Grass")
     float Spacing = 100.0f;
 
+    UPROPERTY(EditAnywhere, Category = "Grass", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float JitterStrength = 0.5f;
+
     UPROPERTY(EditAnywhere, Category = "Grass")
     UMaterialInterface* GrassMaterial;
 

@@ -22,7 +22,9 @@ public:
         SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector3f>, OutPositions)
         SHADER_PARAMETER(int32, GridSize)
         SHADER_PARAMETER(float, Spacing)
+        SHADER_PARAMETER(float, JitterStrength)
     END_SHADER_PARAMETER_STRUCT()
+
 
     static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
     {
@@ -76,11 +78,14 @@ void UGrassComponent::GenerateGrass()
     InstanceCount = GridSize * GridSize;
     int32 CapturedGridSize = GridSize;
     float CapturedSpacing = Spacing;
+    float CapturedJitterStrength = JitterStrength;
+
 
     UE_LOG(LogTemp, Log, TEXT("Generating %d grass positions on GPU..."), InstanceCount);
 
     ENQUEUE_RENDER_COMMAND(GenerateGrassPositions)(
-        [this, CapturedGridSize, CapturedSpacing](FRHICommandListImmediate& RHICmdList)
+        [this, CapturedGridSize, CapturedSpacing, CapturedJitterStrength](FRHICommandListImmediate& RHICmdList)
+
         {
             int32 Total = CapturedGridSize * CapturedGridSize;
 
@@ -112,6 +117,8 @@ void UGrassComponent::GenerateGrass()
             Params.OutPositions = UAV;
             Params.GridSize = CapturedGridSize;
             Params.Spacing = CapturedSpacing;
+            Params.JitterStrength = CapturedJitterStrength;
+
 
             FComputeShaderUtils::Dispatch(RHICmdList, CS, Params,
                 FIntVector(

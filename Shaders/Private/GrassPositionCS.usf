@@ -9,6 +9,22 @@ RWStructuredBuffer<float3> OutPositions;
 // 参数
 int GridSize;
 float Spacing;
+float JitterStrength; // Jitter 强度，建议值 0.0 ~ 1.0
+
+// 简单的哈希函数，用于生成伪随机数
+float Hash(float2 p)
+{
+    return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
+}
+
+// 生成 2D 随机向量，范围 [-1, 1]
+float2 Random2D(float2 seed)
+{
+    return float2(
+        Hash(seed) * 2.0 - 1.0,
+        Hash(seed + float2(1.0, 0.0)) * 2.0 - 1.0
+    );
+}
 
 [numthreads(8, 8, 1)]
 void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
@@ -26,6 +42,11 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     Position.x = x * Spacing - HalfSize;
     Position.y = y * Spacing - HalfSize;
     Position.z = 0;
+    
+    // 添加 Jitter 偏移
+    float2 Jitter = Random2D(float2(x, y)) * Spacing * JitterStrength * 0.5;
+    Position.x += Jitter.x;
+    Position.y += Jitter.y;
     
     // 写入 buffer
     int Index = y * GridSize + x;
