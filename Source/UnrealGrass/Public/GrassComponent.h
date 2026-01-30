@@ -7,6 +7,8 @@
 #include "Components/PrimitiveComponent.h"
 #include "GrassComponent.generated.h"
 
+class UStaticMesh;
+
 UCLASS(ClassGroup=(Rendering), meta=(BlueprintSpawnableComponent))
 class UNREALGRASS_API UGrassComponent : public UPrimitiveComponent
 {
@@ -23,6 +25,10 @@ public:
 
     UPROPERTY(EditAnywhere, Category = "Grass", meta = (ClampMin = "0.0", ClampMax = "1.0"))
     float JitterStrength = 0.5f;
+
+    /** 草叶模型，如果为空则使用默认三角形 */
+    UPROPERTY(EditAnywhere, Category = "Grass")
+    UStaticMesh* GrassMesh;
 
     UPROPERTY(EditAnywhere, Category = "Grass")
     UMaterialInterface* GrassMaterial;

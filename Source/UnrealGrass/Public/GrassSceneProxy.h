@@ -22,12 +22,19 @@ public:
     virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
 
 private:
+    /** 从 UStaticMesh 初始化顶点和索引缓冲区 */
+    void InitFromStaticMesh(UStaticMesh* StaticMesh);
+    
+    /** 使用默认三角形草叶初始化 */
+    void InitDefaultGrassBlade();
+
     // 草叶 Mesh
     FStaticMeshVertexBuffers VertexBuffers;
     FGrassVertexFactory VertexFactory;  // 使用自定义 Vertex Factory
     FRawStaticIndexBuffer IndexBuffer;
     int32 NumVertices = 0;
     int32 NumIndices = 0;
+    int32 NumPrimitives = 0;  // 三角形数量
 
     // 实例数据 (保持 SRV 引用)
     FShaderResourceViewRHIRef PositionBufferSRV;
