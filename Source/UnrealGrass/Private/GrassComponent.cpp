@@ -283,6 +283,7 @@ void UGrassComponent::GenerateGrass()
                         .SetInitialState(ERHIAccess::CopyDest);
                     VisibleGrassData1Buffer = RHICmdList.CreateBuffer(VisibleData1Desc);
                     
+                    // Copy initial data
                     RHICmdList.Transition(FRHITransitionInfo(GrassData1Buffer, ERHIAccess::SRVMask, ERHIAccess::CopySrc));
                     RHICmdList.CopyBufferRegion(VisibleGrassData1Buffer, 0, GrassData1Buffer, 0, Total * sizeof(FVector4f));
                     RHICmdList.Transition(FRHITransitionInfo(GrassData1Buffer, ERHIAccess::CopySrc, ERHIAccess::SRVMask));
@@ -304,6 +305,7 @@ void UGrassComponent::GenerateGrass()
                         .SetInitialState(ERHIAccess::CopyDest);
                     VisibleGrassData2Buffer = RHICmdList.CreateBuffer(VisibleData2Desc);
                     
+                    // Copy initial data
                     RHICmdList.Transition(FRHITransitionInfo(GrassData2Buffer, ERHIAccess::SRVMask, ERHIAccess::CopySrc));
                     RHICmdList.CopyBufferRegion(VisibleGrassData2Buffer, 0, GrassData2Buffer, 0, Total * sizeof(float));
                     RHICmdList.Transition(FRHITransitionInfo(GrassData2Buffer, ERHIAccess::CopySrc, ERHIAccess::SRVMask));
@@ -388,10 +390,16 @@ void UGrassComponent::GenerateGrass()
                         TEXT("GrassVisiblePositionBufferLOD1"),
                         Total * sizeof(FVector3f),
                         sizeof(FVector3f))
-                        .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource)
-                        .SetInitialState(ERHIAccess::SRVMask);
+                        .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource | EBufferUsageFlags::SourceCopy)
+                        .SetInitialState(ERHIAccess::CopyDest);
 
                     VisiblePositionBufferLOD1 = RHICmdList.CreateBuffer(VisibleDescLOD1);
+
+                    // Copy initial data to ensure valid data before GPU Culling runs
+                    RHICmdList.Transition(FRHITransitionInfo(PositionBuffer, ERHIAccess::SRVMask, ERHIAccess::CopySrc));
+                    RHICmdList.CopyBufferRegion(VisiblePositionBufferLOD1, 0, PositionBuffer, 0, Total * sizeof(FVector3f));
+                    RHICmdList.Transition(FRHITransitionInfo(PositionBuffer, ERHIAccess::CopySrc, ERHIAccess::SRVMask));
+                    RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBufferLOD1, ERHIAccess::CopyDest, ERHIAccess::SRVMask));
 
                     auto VisibleLOD1UAVDesc = FRHIViewDesc::CreateBufferUAV()
                         .SetType(FRHIViewDesc::EBufferType::Structured)
@@ -410,9 +418,15 @@ void UGrassComponent::GenerateGrass()
                         TEXT("GrassVisibleData0BufferLOD1"),
                         Total * sizeof(FVector4f),
                         sizeof(FVector4f))
-                        .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource)
-                        .SetInitialState(ERHIAccess::SRVMask);
+                        .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource | EBufferUsageFlags::SourceCopy)
+                        .SetInitialState(ERHIAccess::CopyDest);
                     VisibleGrassData0BufferLOD1 = RHICmdList.CreateBuffer(VisibleData0DescLOD1);
+                    
+                    // Copy initial data
+                    RHICmdList.Transition(FRHITransitionInfo(GrassData0Buffer, ERHIAccess::SRVMask, ERHIAccess::CopySrc));
+                    RHICmdList.CopyBufferRegion(VisibleGrassData0BufferLOD1, 0, GrassData0Buffer, 0, Total * sizeof(FVector4f));
+                    RHICmdList.Transition(FRHITransitionInfo(GrassData0Buffer, ERHIAccess::CopySrc, ERHIAccess::SRVMask));
+                    RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0BufferLOD1, ERHIAccess::CopyDest, ERHIAccess::SRVMask));
                     
                     auto VisibleData0LOD1UAVDesc = FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
                     VisibleGrassData0BufferLOD1UAV = RHICmdList.CreateUnorderedAccessView(VisibleGrassData0BufferLOD1, VisibleData0LOD1UAVDesc);
@@ -426,9 +440,15 @@ void UGrassComponent::GenerateGrass()
                         TEXT("GrassVisibleData1BufferLOD1"),
                         Total * sizeof(FVector4f),
                         sizeof(FVector4f))
-                        .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource)
-                        .SetInitialState(ERHIAccess::SRVMask);
+                        .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource | EBufferUsageFlags::SourceCopy)
+                        .SetInitialState(ERHIAccess::CopyDest);
                     VisibleGrassData1BufferLOD1 = RHICmdList.CreateBuffer(VisibleData1DescLOD1);
+                    
+                    // Copy initial data
+                    RHICmdList.Transition(FRHITransitionInfo(GrassData1Buffer, ERHIAccess::SRVMask, ERHIAccess::CopySrc));
+                    RHICmdList.CopyBufferRegion(VisibleGrassData1BufferLOD1, 0, GrassData1Buffer, 0, Total * sizeof(FVector4f));
+                    RHICmdList.Transition(FRHITransitionInfo(GrassData1Buffer, ERHIAccess::CopySrc, ERHIAccess::SRVMask));
+                    RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1BufferLOD1, ERHIAccess::CopyDest, ERHIAccess::SRVMask));
                     
                     auto VisibleData1LOD1UAVDesc = FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
                     VisibleGrassData1BufferLOD1UAV = RHICmdList.CreateUnorderedAccessView(VisibleGrassData1BufferLOD1, VisibleData1LOD1UAVDesc);
@@ -442,9 +462,15 @@ void UGrassComponent::GenerateGrass()
                         TEXT("GrassVisibleData2BufferLOD1"),
                         Total * sizeof(float),
                         sizeof(float))
-                        .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource)
-                        .SetInitialState(ERHIAccess::SRVMask);
+                        .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource | EBufferUsageFlags::SourceCopy)
+                        .SetInitialState(ERHIAccess::CopyDest);
                     VisibleGrassData2BufferLOD1 = RHICmdList.CreateBuffer(VisibleData2DescLOD1);
+                    
+                    // Copy initial data
+                    RHICmdList.Transition(FRHITransitionInfo(GrassData2Buffer, ERHIAccess::SRVMask, ERHIAccess::CopySrc));
+                    RHICmdList.CopyBufferRegion(VisibleGrassData2BufferLOD1, 0, GrassData2Buffer, 0, Total * sizeof(float));
+                    RHICmdList.Transition(FRHITransitionInfo(GrassData2Buffer, ERHIAccess::CopySrc, ERHIAccess::SRVMask));
+                    RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2BufferLOD1, ERHIAccess::CopyDest, ERHIAccess::SRVMask));
                     
                     auto VisibleData2LOD1UAVDesc = FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
                     VisibleGrassData2BufferLOD1UAV = RHICmdList.CreateUnorderedAccessView(VisibleGrassData2BufferLOD1, VisibleData2LOD1UAVDesc);
@@ -452,7 +478,7 @@ void UGrassComponent::GenerateGrass()
                     VisibleGrassData2BufferLOD1SRV = RHICmdList.CreateShaderResourceView(VisibleGrassData2BufferLOD1, VisibleData2LOD1SRVDesc);
                 }
 
-                UE_LOG(LogTemp, Log, TEXT("Created LOD 1 independent Visible Buffers"));
+                UE_LOG(LogTemp, Log, TEXT("Created LOD 1 independent Visible Buffers (initialized with all %d instances)"), Total);
             }
         }
     );

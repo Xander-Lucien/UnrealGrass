@@ -50,7 +50,7 @@ float4x4 LocalToWorld;
 // Culling parameters
 float BoundingRadius;
 float MaxVisibleDistance;
-float LOD0Distance;       // LOD 0 到 LOD 1 的切换距离
+float LOD0Distance;       // LOD 0 到 LOD 1 的切换距离 (<=0 表示禁用 LOD，所有草都用 LOD0)
 float3 CameraPosition;
 
 // ============================================================================
@@ -106,8 +106,10 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     if (bVisible)
     {
         // Determine LOD level based on distance
+        // LOD0Distance <= 0 means LOD is disabled, all grass uses LOD0
+        // Add small epsilon to avoid floating point precision issues at boundary
         float LOD0DistSq = LOD0Distance * LOD0Distance;
-        bool bUseLOD0 = (LOD0Distance <= 0.0f) || (DistSq <= LOD0DistSq);
+        bool bUseLOD0 = (LOD0Distance <= 0.0f) || (DistSq < LOD0DistSq + 1.0f);
         
         if (bUseLOD0)
         {

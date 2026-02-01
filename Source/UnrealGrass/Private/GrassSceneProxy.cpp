@@ -519,10 +519,17 @@ void FGrassSceneProxy::PerformGPUCullingRenderThread(FRHICommandListImmediate& R
     bCullingPerformedThisFrame = true;
     LastFrameNumber = CurrentFrameNumber;
 
+    // 检查 LOD 功能是否完全可用（需要所有必要的 buffer）
+    const bool bLODFullyEnabled = bEnableLOD && 
+        IndirectArgsBufferLOD1.IsValid() && 
+        IndirectArgsBufferLOD1UAV.IsValid() &&
+        VisiblePositionBufferLOD1.IsValid() &&
+        VisiblePositionBufferLOD1UAV.IsValid();
+
     // ========== Step 1: Reset Indirect Args Buffer (LOD 0 and LOD 1) ==========
     {
         RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBuffer, ERHIAccess::IndirectArgs, ERHIAccess::UAVCompute));
-        if (bEnableLOD && IndirectArgsBufferLOD1.IsValid())
+        if (bLODFullyEnabled)
         {
             RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBufferLOD1, ERHIAccess::IndirectArgs, ERHIAccess::UAVCompute));
         }
@@ -530,9 +537,9 @@ void FGrassSceneProxy::PerformGPUCullingRenderThread(FRHICommandListImmediate& R
         TShaderMapRef<FGrassResetIndirectArgsCS> ResetCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
         FGrassResetIndirectArgsCS::FParameters ResetParams;
         ResetParams.OutIndirectArgs = IndirectArgsBufferUAV;
-        ResetParams.OutIndirectArgsLOD1 = (bEnableLOD && IndirectArgsBufferLOD1UAV.IsValid()) ? IndirectArgsBufferLOD1UAV : IndirectArgsBufferUAV;
+        ResetParams.OutIndirectArgsLOD1 = bLODFullyEnabled ? IndirectArgsBufferLOD1UAV : IndirectArgsBufferUAV;
         ResetParams.IndexCountPerInstance = NumIndices;
-        ResetParams.IndexCountPerInstanceLOD1 = NumIndicesLOD1;
+        ResetParams.IndexCountPerInstanceLOD1 = bLODFullyEnabled ? NumIndicesLOD1 : NumIndices;
         ResetParams.TotalInstanceCount = TotalInstanceCount;
         
         FComputeShaderUtils::Dispatch(RHICmdList, ResetCS, ResetParams, FIntVector(1, 1, 1));
@@ -546,7 +553,7 @@ void FGrassSceneProxy::PerformGPUCullingRenderThread(FRHICommandListImmediate& R
         RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
         
         // LOD 1 独立 Buffer 状态转换
-        if (bEnableLOD && VisiblePositionBufferLOD1.IsValid())
+        if (bLODFullyEnabled)
         {
             RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBufferLOD1, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
             RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0BufferLOD1, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
@@ -565,17 +572,18 @@ void FGrassSceneProxy::PerformGPUCullingRenderThread(FRHICommandListImmediate& R
         CullingParams.OutVisibleGrassData0 = VisibleGrassData0UAV;
         CullingParams.OutVisibleGrassData1 = VisibleGrassData1UAV;
         CullingParams.OutVisibleGrassData2 = VisibleGrassData2UAV;
-        // LOD 1 独立输出 Buffers
-        CullingParams.OutVisiblePositionsLOD1 = (bEnableLOD && VisiblePositionBufferLOD1UAV.IsValid()) ? VisiblePositionBufferLOD1UAV : VisiblePositionBufferUAV;
-        CullingParams.OutVisibleGrassData0LOD1 = (bEnableLOD && VisibleGrassData0BufferLOD1UAV.IsValid()) ? VisibleGrassData0BufferLOD1UAV : VisibleGrassData0UAV;
-        CullingParams.OutVisibleGrassData1LOD1 = (bEnableLOD && VisibleGrassData1BufferLOD1UAV.IsValid()) ? VisibleGrassData1BufferLOD1UAV : VisibleGrassData1UAV;
-        CullingParams.OutVisibleGrassData2LOD1 = (bEnableLOD && VisibleGrassData2BufferLOD1UAV.IsValid()) ? VisibleGrassData2BufferLOD1UAV : VisibleGrassData2UAV;
+        // LOD 1 独立输出 Buffers - 只有当 LOD 完全启用时才使用独立 buffer
+        CullingParams.OutVisiblePositionsLOD1 = bLODFullyEnabled ? VisiblePositionBufferLOD1UAV : VisiblePositionBufferUAV;
+        CullingParams.OutVisibleGrassData0LOD1 = bLODFullyEnabled ? VisibleGrassData0BufferLOD1UAV : VisibleGrassData0UAV;
+        CullingParams.OutVisibleGrassData1LOD1 = bLODFullyEnabled ? VisibleGrassData1BufferLOD1UAV : VisibleGrassData1UAV;
+        CullingParams.OutVisibleGrassData2LOD1 = bLODFullyEnabled ? VisibleGrassData2BufferLOD1UAV : VisibleGrassData2UAV;
         CullingParams.OutIndirectArgs = IndirectArgsBufferUAV;
-        CullingParams.OutIndirectArgsLOD1 = (bEnableLOD && IndirectArgsBufferLOD1UAV.IsValid()) ? IndirectArgsBufferLOD1UAV : IndirectArgsBufferUAV;
+        CullingParams.OutIndirectArgsLOD1 = bLODFullyEnabled ? IndirectArgsBufferLOD1UAV : IndirectArgsBufferUAV;
         CullingParams.TotalInstanceCount = TotalInstanceCount;
         CullingParams.IndexCountPerInstance = NumIndices;
-        CullingParams.IndexCountPerInstanceLOD1 = NumIndicesLOD1;
-        CullingParams.LOD0Distance = bEnableLOD ? LOD0Distance : 0.0f;
+        CullingParams.IndexCountPerInstanceLOD1 = bLODFullyEnabled ? NumIndicesLOD1 : NumIndices;
+        // 只有当 LOD 完全启用时才传递 LOD0Distance，否则传递 0（禁用 LOD 分离）
+        CullingParams.LOD0Distance = bLODFullyEnabled ? LOD0Distance : 0.0f;
         
         // Extract frustum planes from ViewProjectionMatrix
         FPlane FrustumPlanes[6];
@@ -654,13 +662,10 @@ void FGrassSceneProxy::PerformGPUCullingRenderThread(FRHICommandListImmediate& R
     RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
     RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
     RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBuffer, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
-    if (bEnableLOD && IndirectArgsBufferLOD1.IsValid())
+    if (bLODFullyEnabled)
     {
         RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
-    }
-    // LOD 1 独立 Buffer 状态转换
-    if (bEnableLOD && VisiblePositionBufferLOD1.IsValid())
-    {
+        // LOD 1 独立 Buffer 状态转换
         RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
         RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
         RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
@@ -684,10 +689,17 @@ void FGrassSceneProxy::PerformGPUCulling(FRHICommandListImmediate& RHICmdList, c
     bCullingPerformedThisFrame = true;
     LastFrameNumber = CurrentFrameNumber;
 
+    // 检查 LOD 功能是否完全可用（需要所有必要的 buffer）
+    const bool bLODFullyEnabled = bEnableLOD && 
+        IndirectArgsBufferLOD1.IsValid() && 
+        IndirectArgsBufferLOD1UAV.IsValid() &&
+        VisiblePositionBufferLOD1.IsValid() &&
+        VisiblePositionBufferLOD1UAV.IsValid();
+
     // ========== Step 1: 重置 Indirect Args Buffer (LOD 0 和 LOD 1) ==========
     {
         RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBuffer, ERHIAccess::IndirectArgs, ERHIAccess::UAVCompute));
-        if (bEnableLOD && IndirectArgsBufferLOD1.IsValid())
+        if (bLODFullyEnabled)
         {
             RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBufferLOD1, ERHIAccess::IndirectArgs, ERHIAccess::UAVCompute));
         }
@@ -695,9 +707,9 @@ void FGrassSceneProxy::PerformGPUCulling(FRHICommandListImmediate& RHICmdList, c
         TShaderMapRef<FGrassResetIndirectArgsCS> ResetCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
         FGrassResetIndirectArgsCS::FParameters ResetParams;
         ResetParams.OutIndirectArgs = IndirectArgsBufferUAV;
-        ResetParams.OutIndirectArgsLOD1 = (bEnableLOD && IndirectArgsBufferLOD1UAV.IsValid()) ? IndirectArgsBufferLOD1UAV : IndirectArgsBufferUAV;
+        ResetParams.OutIndirectArgsLOD1 = bLODFullyEnabled ? IndirectArgsBufferLOD1UAV : IndirectArgsBufferUAV;
         ResetParams.IndexCountPerInstance = NumIndices;
-        ResetParams.IndexCountPerInstanceLOD1 = NumIndicesLOD1;
+        ResetParams.IndexCountPerInstanceLOD1 = bLODFullyEnabled ? NumIndicesLOD1 : NumIndices;
         ResetParams.TotalInstanceCount = TotalInstanceCount;
         
         FComputeShaderUtils::Dispatch(RHICmdList, ResetCS, ResetParams, FIntVector(1, 1, 1));
@@ -711,7 +723,7 @@ void FGrassSceneProxy::PerformGPUCulling(FRHICommandListImmediate& RHICmdList, c
         RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
         
         // LOD 1 独立 Buffer 状态转换
-        if (bEnableLOD && VisiblePositionBufferLOD1.IsValid())
+        if (bLODFullyEnabled)
         {
             RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBufferLOD1, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
             RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0BufferLOD1, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
@@ -730,17 +742,18 @@ void FGrassSceneProxy::PerformGPUCulling(FRHICommandListImmediate& RHICmdList, c
         CullingParams.OutVisibleGrassData0 = VisibleGrassData0UAV;
         CullingParams.OutVisibleGrassData1 = VisibleGrassData1UAV;
         CullingParams.OutVisibleGrassData2 = VisibleGrassData2UAV;
-        // LOD 1 独立输出 Buffers
-        CullingParams.OutVisiblePositionsLOD1 = (bEnableLOD && VisiblePositionBufferLOD1UAV.IsValid()) ? VisiblePositionBufferLOD1UAV : VisiblePositionBufferUAV;
-        CullingParams.OutVisibleGrassData0LOD1 = (bEnableLOD && VisibleGrassData0BufferLOD1UAV.IsValid()) ? VisibleGrassData0BufferLOD1UAV : VisibleGrassData0UAV;
-        CullingParams.OutVisibleGrassData1LOD1 = (bEnableLOD && VisibleGrassData1BufferLOD1UAV.IsValid()) ? VisibleGrassData1BufferLOD1UAV : VisibleGrassData1UAV;
-        CullingParams.OutVisibleGrassData2LOD1 = (bEnableLOD && VisibleGrassData2BufferLOD1UAV.IsValid()) ? VisibleGrassData2BufferLOD1UAV : VisibleGrassData2UAV;
+        // LOD 1 独立输出 Buffers - 只有当 LOD 完全启用时才使用独立 buffer
+        CullingParams.OutVisiblePositionsLOD1 = bLODFullyEnabled ? VisiblePositionBufferLOD1UAV : VisiblePositionBufferUAV;
+        CullingParams.OutVisibleGrassData0LOD1 = bLODFullyEnabled ? VisibleGrassData0BufferLOD1UAV : VisibleGrassData0UAV;
+        CullingParams.OutVisibleGrassData1LOD1 = bLODFullyEnabled ? VisibleGrassData1BufferLOD1UAV : VisibleGrassData1UAV;
+        CullingParams.OutVisibleGrassData2LOD1 = bLODFullyEnabled ? VisibleGrassData2BufferLOD1UAV : VisibleGrassData2UAV;
         CullingParams.OutIndirectArgs = IndirectArgsBufferUAV;
-        CullingParams.OutIndirectArgsLOD1 = (bEnableLOD && IndirectArgsBufferLOD1UAV.IsValid()) ? IndirectArgsBufferLOD1UAV : IndirectArgsBufferUAV;
+        CullingParams.OutIndirectArgsLOD1 = bLODFullyEnabled ? IndirectArgsBufferLOD1UAV : IndirectArgsBufferUAV;
         CullingParams.TotalInstanceCount = TotalInstanceCount;
         CullingParams.IndexCountPerInstance = NumIndices;
-        CullingParams.IndexCountPerInstanceLOD1 = NumIndicesLOD1;
-        CullingParams.LOD0Distance = bEnableLOD ? LOD0Distance : 0.0f;
+        CullingParams.IndexCountPerInstanceLOD1 = bLODFullyEnabled ? NumIndicesLOD1 : NumIndices;
+        // 只有当 LOD 完全启用时才传递 LOD0Distance，否则传递 0（禁用 LOD 分离）
+        CullingParams.LOD0Distance = bLODFullyEnabled ? LOD0Distance : 0.0f;
         
         // 提取视锥平面
         const FMatrix ViewProjectionMatrix = View->ViewMatrices.GetViewProjectionMatrix();
@@ -821,13 +834,10 @@ void FGrassSceneProxy::PerformGPUCulling(FRHICommandListImmediate& RHICmdList, c
     RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
     RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
     RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBuffer, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
-    if (bEnableLOD && IndirectArgsBufferLOD1.IsValid())
+    if (bLODFullyEnabled)
     {
         RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
-    }
-    // LOD 1 独立 Buffer 状态转换
-    if (bEnableLOD && VisiblePositionBufferLOD1.IsValid())
-    {
+        // LOD 1 独立 Buffer 状态转换
         RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
         RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
         RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
