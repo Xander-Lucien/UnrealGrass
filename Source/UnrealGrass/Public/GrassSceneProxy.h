@@ -54,10 +54,28 @@ private:
     FShaderResourceViewRHIRef PositionBufferSRV;
     int32 TotalInstanceCount = 0;  // 总实例数量
 
+    // 草叶属性数据 Buffers (用于 Bezier 变形)
+    FShaderResourceViewRHIRef GrassData0SRV;  // Height, Width, Tilt, Bend
+    FShaderResourceViewRHIRef GrassData1SRV;  // TaperAmount, FacingDir.x, FacingDir.y, P1Offset
+    FShaderResourceViewRHIRef GrassData2SRV;  // P2Offset
+
     // 可见实例位置 Buffer (Culling 输出，用于渲染)
     FBufferRHIRef VisiblePositionBuffer;
     FShaderResourceViewRHIRef VisiblePositionBufferSRV;
     FUnorderedAccessViewRHIRef VisiblePositionBufferUAV;
+
+    // 可见实例属性 Buffers (Culling 输出，用于渲染)
+    FBufferRHIRef VisibleGrassData0Buffer;  // Height, Width, Tilt, Bend
+    FShaderResourceViewRHIRef VisibleGrassData0SRV;
+    FUnorderedAccessViewRHIRef VisibleGrassData0UAV;
+    
+    FBufferRHIRef VisibleGrassData1Buffer;  // TaperAmount, FacingDir.x, FacingDir.y, P1Offset
+    FShaderResourceViewRHIRef VisibleGrassData1SRV;
+    FUnorderedAccessViewRHIRef VisibleGrassData1UAV;
+    
+    FBufferRHIRef VisibleGrassData2Buffer;  // P2Offset
+    FShaderResourceViewRHIRef VisibleGrassData2SRV;
+    FUnorderedAccessViewRHIRef VisibleGrassData2UAV;
 
     // ======== Indirect Draw 支持 ========
     bool bUseIndirectDraw = false;

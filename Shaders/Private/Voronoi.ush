@@ -1,0 +1,43 @@
+// Voronoi.ush
+// Simple Voronoi for grass clumping
+
+#pragma once
+
+// Hash function - generates random point
+float2 Hash22(float2 p)
+{
+    float3 a = frac(float3(p.x, p.y, p.x) * float3(123.34, 234.34, 345.65));
+    a += dot(a, a + 34.45);
+    return frac(float2(a.x * a.y, a.y * a.z));
+}
+
+// Simple Voronoi
+// Input: UV (0-1), NumClumps (number of seed points), NumClumpTypes (number of color types)
+// Output: float4(id, clumpCentre.x, clumpCentre.y, 1.0)
+float4 Voronoi(float2 UV, float NumClumps, float NumClumpTypes)
+{
+    float MinDist = 100000.0;
+    float Id = 0.0;
+    float2 ClumpCentre = float2(0.0, 0.0);
+    
+    int ClumpLimit = min(100, (int)NumClumps);
+    
+    for (int j = 1; j < ClumpLimit; j++)
+    {
+        float2 JJ = float2((float)j, (float)j);
+        float2 P = Hash22(JJ);
+        
+        float D = distance(P, UV);
+        
+        if (D < MinDist)
+        {
+            MinDist = D;
+            Id = fmod((float)j, NumClumpTypes);
+            ClumpCentre = P;
+        }
+    }
+    
+    return float4(Id, ClumpCentre.x, ClumpCentre.y, 1.0);
+}
+
+

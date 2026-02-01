@@ -31,6 +31,13 @@ void FGrassVertexFactory::SetInstancePositionSRV(FRHIShaderResourceView* InSRV, 
     NumInstances = InNumInstances;
 }
 
+void FGrassVertexFactory::SetGrassDataSRV(FRHIShaderResourceView* InData0SRV, FRHIShaderResourceView* InData1SRV, FRHIShaderResourceView* InData2SRV)
+{
+    GrassData0SRV = InData0SRV;
+    GrassData1SRV = InData1SRV;
+    GrassData2SRV = InData2SRV;
+}
+
 bool FGrassVertexFactory::ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters)
 {
     // 只为 SM5 及以上编译
@@ -53,8 +60,11 @@ IMPLEMENT_TYPE_LAYOUT(FGrassVertexFactoryShaderParameters);
 
 void FGrassVertexFactoryShaderParameters::Bind(const FShaderParameterMap& ParameterMap)
 {
-    // 绑定 Shader 中的 GrassInstancePositions 参数
+    // 绑定 Shader 中的参数
     InstancePositionBuffer.Bind(ParameterMap, TEXT("GrassInstancePositions"));
+    GrassData0Buffer.Bind(ParameterMap, TEXT("GrassData0"));
+    GrassData1Buffer.Bind(ParameterMap, TEXT("GrassData1"));
+    GrassData2Buffer.Bind(ParameterMap, TEXT("GrassData2"));
 }
 
 void FGrassVertexFactoryShaderParameters::GetElementShaderBindings(
@@ -77,6 +87,34 @@ void FGrassVertexFactoryShaderParameters::GetElementShaderBindings(
         if (SRV)
         {
             ShaderBindings.Add(InstancePositionBuffer, SRV);
+        }
+    }
+    
+    // 绑定草叶数据缓冲区
+    if (GrassData0Buffer.IsBound())
+    {
+        FRHIShaderResourceView* SRV = GrassVF->GetGrassData0SRV();
+        if (SRV)
+        {
+            ShaderBindings.Add(GrassData0Buffer, SRV);
+        }
+    }
+    
+    if (GrassData1Buffer.IsBound())
+    {
+        FRHIShaderResourceView* SRV = GrassVF->GetGrassData1SRV();
+        if (SRV)
+        {
+            ShaderBindings.Add(GrassData1Buffer, SRV);
+        }
+    }
+    
+    if (GrassData2Buffer.IsBound())
+    {
+        FRHIShaderResourceView* SRV = GrassVF->GetGrassData2SRV();
+        if (SRV)
+        {
+            ShaderBindings.Add(GrassData2Buffer, SRV);
         }
     }
 }

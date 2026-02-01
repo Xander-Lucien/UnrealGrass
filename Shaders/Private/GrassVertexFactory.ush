@@ -1,14 +1,38 @@
 // GrassVertexFactory.ush
-// 简化的草地 Vertex Factory - 支持 GPU Instancing 和实例位置偏移
+// Grass Vertex Factory with Bezier Curve Blade Deformation
 
 #include "/Engine/Private/VertexFactoryCommon.ush"
 
 // ============================================================================
-// 草地实例位置缓冲区 (由 C++ FGrassVertexFactoryShaderParameters 绑定)
+// Grass Instance Buffers (bound by FGrassVertexFactoryShaderParameters)
 // ============================================================================
 #if USE_GRASS_INSTANCING
 StructuredBuffer<float3> GrassInstancePositions;
+StructuredBuffer<float4> GrassData0;  // Height, Width, Tilt, Bend
+StructuredBuffer<float4> GrassData1;  // TaperAmount, FacingDir.x, FacingDir.y, P1Offset
+StructuredBuffer<float> GrassData2;   // P2Offset
 #endif
+
+// ============================================================================
+// Bezier Curve Functions
+// ============================================================================
+float3 CubicBezier(float3 P0, float3 P1, float3 P2, float3 P3, float t)
+{
+    float t2 = t * t;
+    float t3 = t2 * t;
+    float mt = 1.0 - t;
+    float mt2 = mt * mt;
+    float mt3 = mt2 * mt;
+    return mt3 * P0 + 3.0 * mt2 * t * P1 + 3.0 * mt * t2 * P2 + t3 * P3;
+}
+
+float3 CubicBezierTangent(float3 P0, float3 P1, float3 P2, float3 P3, float t)
+{
+    float t2 = t * t;
+    float mt = 1.0 - t;
+    float mt2 = mt * mt;
+    return 3.0 * mt2 * (P1 - P0) + 6.0 * mt * t * (P2 - P1) + 3.0 * t2 * (P3 - P2);
+}
 
 // ============================================================================
 // 主输入结构
@@ -102,10 +126,92 @@ FPrimitiveSceneData GetPrimitiveData(FVertexFactoryIntermediates Intermediates)
 }
 
 // ============================================================================
-// 辅助函数
+// Helper Functions
 // ============================================================================
 
-// 获取草地实例位置偏移
+// Get grass instance data and deform vertex position
+float3 GetDeformedGrassPosition(float3 LocalPos, uint InstanceId)
+{
+#if USE_GRASS_INSTANCING
+    // Get instance data
+    float3 InstancePos = GrassInstancePositions[InstanceId];
+    float4 Data0 = GrassData0[InstanceId];  // Height, Width, Tilt, Bend
+    float4 Data1 = GrassData1[InstanceId];  // TaperAmount, FacingDir.x, FacingDir.y, P1Offset
+    float P2Offset = GrassData2[InstanceId];
+    
+    float Height = Data0.x;
+    float Width = Data0.y;
+    float Tilt = Data0.z;
+    float Bend = Data0.w;
+    float TaperAmount = Data1.x;
+    float2 FacingDir = float2(Data1.y, Data1.z);
+    float P1Offset = Data1.w;
+    
+    // Normalized height along blade (0 = root, 1 = tip)
+    // Use vertex Z position normalized by default blade height (70.819 cm from original mesh)
+    float DefaultBladeHeight = 70.819;
+    float t = saturate(LocalPos.z / DefaultBladeHeight);
+    
+    // Width taper (narrower at top)
+    float WidthScale = lerp(1.0, 1.0 - TaperAmount, t);
+    float FinalWidth = Width * WidthScale;
+    float OriginalWidth = 3.445;  // Original blade half-width in cm
+    float WidthRatio = FinalWidth / (OriginalWidth * 2.0);
+    
+    // Build bezier control points
+    float TiltAmount = Tilt * Height;
+    
+    float3 P0 = float3(0, 0, 0);
+    float3 P1 = float3(FacingDir.x * P1Offset * TiltAmount, 
+                       FacingDir.y * P1Offset * TiltAmount, 
+                       Height * 0.33);
+    float3 P2 = float3(FacingDir.x * P2Offset * TiltAmount + FacingDir.x * Bend * Height * 0.5,
+                       FacingDir.y * P2Offset * TiltAmount + FacingDir.y * Bend * Height * 0.5,
+                       Height * 0.66);
+    float3 P3 = float3(FacingDir.x * TiltAmount,
+                       FacingDir.y * TiltAmount,
+                       Height);
+    
+    // Get position on bezier curve
+    float3 CurvePos = CubicBezier(P0, P1, P2, P3, t);
+    
+    // Get tangent for width direction
+    float3 Tangent = CubicBezierTangent(P0, P1, P2, P3, t);
+    float TangentLen = length(Tangent);
+    if (TangentLen > 0.001)
+    {
+        Tangent = Tangent / TangentLen;
+    }
+    else
+    {
+        Tangent = float3(0, 0, 1);
+    }
+    
+    // Width direction (perpendicular to tangent in XY plane)
+    float3 WidthDir = float3(-FacingDir.y, FacingDir.x, 0);
+    float WidthDirLen = length(WidthDir);
+    if (WidthDirLen > 0.001)
+    {
+        WidthDir = WidthDir / WidthDirLen;
+    }
+    else
+    {
+        WidthDir = float3(1, 0, 0);
+    }
+    
+    // Apply width offset (LocalPos.x is the width offset)
+    float3 FinalPos = CurvePos + WidthDir * LocalPos.x * WidthRatio;
+    
+    // Add instance position
+    FinalPos += InstancePos;
+    
+    return FinalPos;
+#else
+    return LocalPos;
+#endif
+}
+
+// Simple offset-only version for depth passes
 float3 GetGrassInstanceOffset(uint InstanceId)
 {
 #if USE_GRASS_INSTANCING
@@ -115,7 +221,7 @@ float3 GetGrassInstanceOffset(uint InstanceId)
 #endif
 }
 
-// 计算切线空间基础
+// Calculate tangent basis
 float3x3 CalcTangentBasis(half3 TangentX, half4 TangentZ)
 {
     half3 TangentXN = TangentBias(TangentX);
@@ -138,44 +244,47 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
     return Intermediates;
 }
 
-// 主要的 World Position 计算 (带实例偏移)
+// Main World Position calculation (with Bezier deformation)
 float4 VertexFactoryGetWorldPosition(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates)
 {
     FDFMatrix LocalToWorld = GetPrimitiveDataFromUniformBuffer().LocalToWorld;
-    float4 WorldPos = TransformLocalToTranslatedWorld(Input.Position.xyz, LocalToWorld);
     
-    // 添加实例位置偏移
 #if USE_GRASS_INSTANCING
-    float3 InstanceOffset = GetGrassInstanceOffset(Input.InstanceId);
-    WorldPos.xyz += InstanceOffset;
+    // Apply Bezier curve deformation
+    float3 DeformedPos = GetDeformedGrassPosition(Input.Position.xyz, Input.InstanceId);
+    float4 WorldPos = TransformLocalToTranslatedWorld(DeformedPos, LocalToWorld);
+#else
+    float4 WorldPos = TransformLocalToTranslatedWorld(Input.Position.xyz, LocalToWorld);
 #endif
     
     return WorldPos;
 }
 
-// Position Only 版本 (用于深度 Pass)
+// Position Only version (for depth pass - use simple offset for performance)
 float4 VertexFactoryGetWorldPosition(FPositionOnlyVertexFactoryInput Input)
 {
     FDFMatrix LocalToWorld = GetPrimitiveDataFromUniformBuffer().LocalToWorld;
-    float4 WorldPos = TransformLocalToTranslatedWorld(Input.Position.xyz, LocalToWorld);
     
 #if USE_GRASS_INSTANCING
-    float3 InstanceOffset = GetGrassInstanceOffset(Input.InstanceId);
-    WorldPos.xyz += InstanceOffset;
+    float3 DeformedPos = GetDeformedGrassPosition(Input.Position.xyz, Input.InstanceId);
+    float4 WorldPos = TransformLocalToTranslatedWorld(DeformedPos, LocalToWorld);
+#else
+    float4 WorldPos = TransformLocalToTranslatedWorld(Input.Position.xyz, LocalToWorld);
 #endif
     
     return WorldPos;
 }
 
-// Position And Normal Only 版本 (用于阴影深度 Pass)
+// Position And Normal Only version (for shadow depth pass)
 float4 VertexFactoryGetWorldPosition(FPositionAndNormalOnlyVertexFactoryInput Input)
 {
     FDFMatrix LocalToWorld = GetPrimitiveDataFromUniformBuffer().LocalToWorld;
-    float4 WorldPos = TransformLocalToTranslatedWorld(Input.Position.xyz, LocalToWorld);
     
 #if USE_GRASS_INSTANCING
-    float3 InstanceOffset = GetGrassInstanceOffset(Input.InstanceId);
-    WorldPos.xyz += InstanceOffset;
+    float3 DeformedPos = GetDeformedGrassPosition(Input.Position.xyz, Input.InstanceId);
+    float4 WorldPos = TransformLocalToTranslatedWorld(DeformedPos, LocalToWorld);
+#else
+    float4 WorldPos = TransformLocalToTranslatedWorld(Input.Position.xyz, LocalToWorld);
 #endif
     
     return WorldPos;

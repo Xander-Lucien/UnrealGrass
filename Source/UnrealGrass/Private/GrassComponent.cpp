@@ -20,9 +20,25 @@ public:
 
     BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
         SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector3f>, OutPositions)
+        SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector4f>, OutGrassData0)
+        SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector4f>, OutGrassData1)
+        SHADER_PARAMETER_UAV(RWStructuredBuffer<float>, OutGrassData2)
         SHADER_PARAMETER(int32, GridSize)
         SHADER_PARAMETER(float, Spacing)
         SHADER_PARAMETER(float, JitterStrength)
+        SHADER_PARAMETER(int32, NumClumps)
+        SHADER_PARAMETER(int32, NumClumpTypes)
+        SHADER_PARAMETER(float, PullToCentre)
+        SHADER_PARAMETER(float, PointInSameDirection)
+        SHADER_PARAMETER(float, BaseHeight)
+        SHADER_PARAMETER(float, HeightRandom)
+        SHADER_PARAMETER(float, BaseWidth)
+        SHADER_PARAMETER(float, WidthRandom)
+        SHADER_PARAMETER(float, BaseTilt)
+        SHADER_PARAMETER(float, TiltRandom)
+        SHADER_PARAMETER(float, BaseBend)
+        SHADER_PARAMETER(float, BendRandom)
+        SHADER_PARAMETER(float, TaperAmount)
     END_SHADER_PARAMETER_STRUCT()
 
     static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -75,13 +91,33 @@ void UGrassComponent::GenerateGrass()
     float CapturedJitterStrength = JitterStrength;
     bool CapturedUseIndirectDraw = bUseIndirectDraw;
     bool CapturedEnableFrustumCulling = bEnableFrustumCulling;
+    
+    // Clump 参数
+    int32 CapturedNumClumps = NumClumps;
+    int32 CapturedNumClumpTypes = NumClumpTypes;
+    float CapturedPullToCentre = ClumpParameters.PullToCentre;
+    float CapturedPointInSameDirection = ClumpParameters.PointInSameDirection;
+    
+    // Blade 参数
+    float CapturedBaseHeight = ClumpParameters.BaseHeight;
+    float CapturedHeightRandom = ClumpParameters.HeightRandom;
+    float CapturedBaseWidth = ClumpParameters.BaseWidth;
+    float CapturedWidthRandom = ClumpParameters.WidthRandom;
+    float CapturedBaseTilt = ClumpParameters.BaseTilt;
+    float CapturedTiltRandom = ClumpParameters.TiltRandom;
+    float CapturedBaseBend = ClumpParameters.BaseBend;
+    float CapturedBendRandom = ClumpParameters.BendRandom;
+    float CapturedTaperAmount = ClumpParameters.TaperAmount;
 
-    UE_LOG(LogTemp, Log, TEXT("Generating %d grass positions on GPU (FrustumCulling=%d)..."), 
-        InstanceCount, CapturedEnableFrustumCulling ? 1 : 0);
+    UE_LOG(LogTemp, Log, TEXT("Generating %d grass positions on GPU (FrustumCulling=%d, NumClumps=%d)..."), 
+        InstanceCount, CapturedEnableFrustumCulling ? 1 : 0, CapturedNumClumps);
 
     ENQUEUE_RENDER_COMMAND(GenerateGrassPositions)(
         [this, CapturedGridSize, CapturedSpacing, CapturedJitterStrength, 
-         CapturedUseIndirectDraw, CapturedEnableFrustumCulling](FRHICommandListImmediate& RHICmdList)
+         CapturedUseIndirectDraw, CapturedEnableFrustumCulling,
+         CapturedNumClumps, CapturedNumClumpTypes, CapturedPullToCentre, CapturedPointInSameDirection,
+         CapturedBaseHeight, CapturedHeightRandom, CapturedBaseWidth, CapturedWidthRandom,
+         CapturedBaseTilt, CapturedTiltRandom, CapturedBaseBend, CapturedBendRandom, CapturedTaperAmount](FRHICommandListImmediate& RHICmdList)
         {
             int32 Total = CapturedGridSize * CapturedGridSize;
 
@@ -107,13 +143,70 @@ void UGrassComponent::GenerateGrass()
                 .SetNumElements(Total);
             PositionBufferSRV = RHICmdList.CreateShaderResourceView(PositionBuffer, SRVDesc);
 
+            // ========== 创建草叶数据 Buffers ==========
+            // GrassData0: Height, Width, Tilt, Bend (float4)
+            FRHIBufferCreateDesc Data0Desc = FRHIBufferCreateDesc::CreateStructured(
+                TEXT("GrassData0Buffer"),
+                Total * sizeof(FVector4f),
+                sizeof(FVector4f))
+                .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource)
+                .SetInitialState(ERHIAccess::UAVCompute);
+            FBufferRHIRef GrassData0Buffer = RHICmdList.CreateBuffer(Data0Desc);
+            auto Data0UAVDesc = FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+            FUnorderedAccessViewRHIRef Data0UAV = RHICmdList.CreateUnorderedAccessView(GrassData0Buffer, Data0UAVDesc);
+            auto Data0SRVDesc = FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+            GrassDataBufferSRV = RHICmdList.CreateShaderResourceView(GrassData0Buffer, Data0SRVDesc);
+            GrassDataBuffer = GrassData0Buffer;
+
+            // GrassData1: TaperAmount, FacingDir.x, FacingDir.y, P1Offset (float4)
+            FRHIBufferCreateDesc Data1Desc = FRHIBufferCreateDesc::CreateStructured(
+                TEXT("GrassData1Buffer"),
+                Total * sizeof(FVector4f),
+                sizeof(FVector4f))
+                .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource)
+                .SetInitialState(ERHIAccess::UAVCompute);
+            GrassData1Buffer = RHICmdList.CreateBuffer(Data1Desc);
+            auto Data1UAVDesc = FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+            FUnorderedAccessViewRHIRef Data1UAV = RHICmdList.CreateUnorderedAccessView(GrassData1Buffer, Data1UAVDesc);
+            auto Data1SRVDesc = FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+            GrassData1BufferSRV = RHICmdList.CreateShaderResourceView(GrassData1Buffer, Data1SRVDesc);
+
+            // GrassData2: P2Offset (float)
+            FRHIBufferCreateDesc Data2Desc = FRHIBufferCreateDesc::CreateStructured(
+                TEXT("GrassData2Buffer"),
+                Total * sizeof(float),
+                sizeof(float))
+                .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource)
+                .SetInitialState(ERHIAccess::UAVCompute);
+            GrassData2Buffer = RHICmdList.CreateBuffer(Data2Desc);
+            auto Data2UAVDesc = FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+            FUnorderedAccessViewRHIRef Data2UAV = RHICmdList.CreateUnorderedAccessView(GrassData2Buffer, Data2UAVDesc);
+            auto Data2SRVDesc = FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+            GrassData2BufferSRV = RHICmdList.CreateShaderResourceView(GrassData2Buffer, Data2SRVDesc);
+
             // ========== 执行位置生成 Compute Shader ==========
             TShaderMapRef<FGrassPositionCS> CS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
             FGrassPositionCS::FParameters Params;
             Params.OutPositions = UAV;
+            Params.OutGrassData0 = Data0UAV;
+            Params.OutGrassData1 = Data1UAV;
+            Params.OutGrassData2 = Data2UAV;
             Params.GridSize = CapturedGridSize;
             Params.Spacing = CapturedSpacing;
             Params.JitterStrength = CapturedJitterStrength;
+            Params.NumClumps = CapturedNumClumps;
+            Params.NumClumpTypes = CapturedNumClumpTypes;
+            Params.PullToCentre = CapturedPullToCentre;
+            Params.PointInSameDirection = CapturedPointInSameDirection;
+            Params.BaseHeight = CapturedBaseHeight;
+            Params.HeightRandom = CapturedHeightRandom;
+            Params.BaseWidth = CapturedBaseWidth;
+            Params.WidthRandom = CapturedWidthRandom;
+            Params.BaseTilt = CapturedBaseTilt;
+            Params.TiltRandom = CapturedTiltRandom;
+            Params.BaseBend = CapturedBaseBend;
+            Params.BendRandom = CapturedBendRandom;
+            Params.TaperAmount = CapturedTaperAmount;
 
             FComputeShaderUtils::Dispatch(RHICmdList, CS, Params,
                 FIntVector(
@@ -122,6 +215,9 @@ void UGrassComponent::GenerateGrass()
                     1));
 
             RHICmdList.Transition(FRHITransitionInfo(PositionBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+            RHICmdList.Transition(FRHITransitionInfo(GrassData0Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+            RHICmdList.Transition(FRHITransitionInfo(GrassData1Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+            RHICmdList.Transition(FRHITransitionInfo(GrassData2Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
 
             // ========== 创建可见实例位置 Buffer（用于剔除输出）==========
             if (CapturedEnableFrustumCulling || CapturedUseIndirectDraw)
@@ -154,7 +250,72 @@ void UGrassComponent::GenerateGrass()
                     .SetNumElements(Total);
                 VisiblePositionBufferSRV = RHICmdList.CreateShaderResourceView(VisiblePositionBuffer, VisibleSRVDesc);
 
-                UE_LOG(LogTemp, Log, TEXT("Created VisiblePositionBuffer for GPU Culling (initialized with all %d positions)"), Total);
+                // ========== 创建可见实例属性 Buffers（用于剔除输出）==========
+                // VisibleGrassData0: Height, Width, Tilt, Bend (float4)
+                {
+                    FRHIBufferCreateDesc VisibleData0Desc = FRHIBufferCreateDesc::CreateStructured(
+                        TEXT("GrassVisibleData0Buffer"),
+                        Total * sizeof(FVector4f),
+                        sizeof(FVector4f))
+                        .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource | EBufferUsageFlags::SourceCopy)
+                        .SetInitialState(ERHIAccess::CopyDest);
+                    VisibleGrassData0Buffer = RHICmdList.CreateBuffer(VisibleData0Desc);
+                    
+                    // Copy initial data
+                    RHICmdList.Transition(FRHITransitionInfo(GrassData0Buffer, ERHIAccess::SRVMask, ERHIAccess::CopySrc));
+                    RHICmdList.CopyBufferRegion(VisibleGrassData0Buffer, 0, GrassData0Buffer, 0, Total * sizeof(FVector4f));
+                    RHICmdList.Transition(FRHITransitionInfo(GrassData0Buffer, ERHIAccess::CopySrc, ERHIAccess::SRVMask));
+                    RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0Buffer, ERHIAccess::CopyDest, ERHIAccess::SRVMask));
+                    
+                    auto VisibleData0UAVDesc = FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+                    VisibleGrassData0BufferUAV = RHICmdList.CreateUnorderedAccessView(VisibleGrassData0Buffer, VisibleData0UAVDesc);
+                    auto VisibleData0SRVDesc = FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+                    VisibleGrassData0BufferSRV = RHICmdList.CreateShaderResourceView(VisibleGrassData0Buffer, VisibleData0SRVDesc);
+                }
+                
+                // VisibleGrassData1: TaperAmount, FacingDir.x, FacingDir.y, P1Offset (float4)
+                {
+                    FRHIBufferCreateDesc VisibleData1Desc = FRHIBufferCreateDesc::CreateStructured(
+                        TEXT("GrassVisibleData1Buffer"),
+                        Total * sizeof(FVector4f),
+                        sizeof(FVector4f))
+                        .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource | EBufferUsageFlags::SourceCopy)
+                        .SetInitialState(ERHIAccess::CopyDest);
+                    VisibleGrassData1Buffer = RHICmdList.CreateBuffer(VisibleData1Desc);
+                    
+                    RHICmdList.Transition(FRHITransitionInfo(GrassData1Buffer, ERHIAccess::SRVMask, ERHIAccess::CopySrc));
+                    RHICmdList.CopyBufferRegion(VisibleGrassData1Buffer, 0, GrassData1Buffer, 0, Total * sizeof(FVector4f));
+                    RHICmdList.Transition(FRHITransitionInfo(GrassData1Buffer, ERHIAccess::CopySrc, ERHIAccess::SRVMask));
+                    RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1Buffer, ERHIAccess::CopyDest, ERHIAccess::SRVMask));
+                    
+                    auto VisibleData1UAVDesc = FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+                    VisibleGrassData1BufferUAV = RHICmdList.CreateUnorderedAccessView(VisibleGrassData1Buffer, VisibleData1UAVDesc);
+                    auto VisibleData1SRVDesc = FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+                    VisibleGrassData1BufferSRV = RHICmdList.CreateShaderResourceView(VisibleGrassData1Buffer, VisibleData1SRVDesc);
+                }
+                
+                // VisibleGrassData2: P2Offset (float)
+                {
+                    FRHIBufferCreateDesc VisibleData2Desc = FRHIBufferCreateDesc::CreateStructured(
+                        TEXT("GrassVisibleData2Buffer"),
+                        Total * sizeof(float),
+                        sizeof(float))
+                        .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource | EBufferUsageFlags::SourceCopy)
+                        .SetInitialState(ERHIAccess::CopyDest);
+                    VisibleGrassData2Buffer = RHICmdList.CreateBuffer(VisibleData2Desc);
+                    
+                    RHICmdList.Transition(FRHITransitionInfo(GrassData2Buffer, ERHIAccess::SRVMask, ERHIAccess::CopySrc));
+                    RHICmdList.CopyBufferRegion(VisibleGrassData2Buffer, 0, GrassData2Buffer, 0, Total * sizeof(float));
+                    RHICmdList.Transition(FRHITransitionInfo(GrassData2Buffer, ERHIAccess::CopySrc, ERHIAccess::SRVMask));
+                    RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2Buffer, ERHIAccess::CopyDest, ERHIAccess::SRVMask));
+                    
+                    auto VisibleData2UAVDesc = FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+                    VisibleGrassData2BufferUAV = RHICmdList.CreateUnorderedAccessView(VisibleGrassData2Buffer, VisibleData2UAVDesc);
+                    auto VisibleData2SRVDesc = FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+                    VisibleGrassData2BufferSRV = RHICmdList.CreateShaderResourceView(VisibleGrassData2Buffer, VisibleData2SRVDesc);
+                }
+
+                UE_LOG(LogTemp, Log, TEXT("Created Visible Buffers for GPU Culling (initialized with all %d instances)"), Total);
             }
 
             // ========== 创建 Indirect Draw Args Buffer ==========
@@ -179,7 +340,7 @@ void UGrassComponent::GenerateGrass()
                 // 初始化 Indirect Args
                 RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBuffer, ERHIAccess::IndirectArgs, ERHIAccess::CopyDest));
                 uint32* IndirectArgs = (uint32*)RHICmdList.LockBuffer(IndirectArgsBuffer, 0, IndirectArgsSize, RLM_WriteOnly);
-                IndirectArgs[0] = 3;     // IndexCountPerInstance (默认三角形)
+                IndirectArgs[0] = 39;    // IndexCountPerInstance (15 vertices, 13 triangles = 39 indices)
                 IndirectArgs[1] = Total; // InstanceCount
                 IndirectArgs[2] = 0;     // StartIndexLocation
                 IndirectArgs[3] = 0;     // BaseVertexLocation

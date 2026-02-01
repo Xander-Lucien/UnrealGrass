@@ -26,7 +26,13 @@ public:
 
     BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
         SHADER_PARAMETER_SRV(StructuredBuffer<FVector3f>, InPositions)
+        SHADER_PARAMETER_SRV(StructuredBuffer<FVector4f>, InGrassData0)
+        SHADER_PARAMETER_SRV(StructuredBuffer<FVector4f>, InGrassData1)
+        SHADER_PARAMETER_SRV(StructuredBuffer<float>, InGrassData2)
         SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector3f>, OutVisiblePositions)
+        SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector4f>, OutVisibleGrassData0)
+        SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector4f>, OutVisibleGrassData1)
+        SHADER_PARAMETER_UAV(RWStructuredBuffer<float>, OutVisibleGrassData2)
         SHADER_PARAMETER_UAV(RWBuffer<uint>, OutIndirectArgs)
         SHADER_PARAMETER(uint32, TotalInstanceCount)
         SHADER_PARAMETER(uint32, IndexCountPerInstance)
@@ -70,22 +76,34 @@ IMPLEMENT_GLOBAL_SHADER(FGrassResetIndirectArgsCS, "/Plugin/UnrealGrass/Private/
 // ============================================================================
 
 FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
-    : FPrimitiveSceneProxy(Component)
-    , VertexFactory(GetScene().GetFeatureLevel(), "GrassVertexFactory")
-    , PositionBuffer(Component->PositionBuffer)
-    , PositionBufferSRV(Component->PositionBufferSRV)
-    , TotalInstanceCount(Component->InstanceCount)
-    , VisiblePositionBuffer(Component->VisiblePositionBuffer)
-    , VisiblePositionBufferSRV(Component->VisiblePositionBufferSRV)
-    , VisiblePositionBufferUAV(Component->VisiblePositionBufferUAV)
-    , bUseIndirectDraw(Component->bUseIndirectDraw)
-    , IndirectArgsBuffer(Component->IndirectArgsBuffer)
-    , IndirectArgsBufferUAV(Component->IndirectArgsBufferUAV)
-    , bEnableFrustumCulling(Component->bEnableFrustumCulling)
-    , bEnableDistanceCulling(Component->bEnableDistanceCulling)
-    , MaxVisibleDistance(Component->MaxVisibleDistance)
-    , GrassBoundingRadius(Component->GrassBoundingRadius)
-    , Material(Component->GrassMaterial)
+: FPrimitiveSceneProxy(Component)
+, VertexFactory(GetScene().GetFeatureLevel(), "GrassVertexFactory")
+, PositionBuffer(Component->PositionBuffer)
+, PositionBufferSRV(Component->PositionBufferSRV)
+, TotalInstanceCount(Component->InstanceCount)
+, GrassData0SRV(Component->GrassDataBufferSRV)
+, GrassData1SRV(Component->GrassData1BufferSRV)
+, GrassData2SRV(Component->GrassData2BufferSRV)
+, VisiblePositionBuffer(Component->VisiblePositionBuffer)
+, VisiblePositionBufferSRV(Component->VisiblePositionBufferSRV)
+, VisiblePositionBufferUAV(Component->VisiblePositionBufferUAV)
+, VisibleGrassData0Buffer(Component->VisibleGrassData0Buffer)
+, VisibleGrassData0SRV(Component->VisibleGrassData0BufferSRV)
+, VisibleGrassData0UAV(Component->VisibleGrassData0BufferUAV)
+, VisibleGrassData1Buffer(Component->VisibleGrassData1Buffer)
+, VisibleGrassData1SRV(Component->VisibleGrassData1BufferSRV)
+, VisibleGrassData1UAV(Component->VisibleGrassData1BufferUAV)
+, VisibleGrassData2Buffer(Component->VisibleGrassData2Buffer)
+, VisibleGrassData2SRV(Component->VisibleGrassData2BufferSRV)
+, VisibleGrassData2UAV(Component->VisibleGrassData2BufferUAV)
+, bUseIndirectDraw(Component->bUseIndirectDraw)
+, IndirectArgsBuffer(Component->IndirectArgsBuffer)
+, IndirectArgsBufferUAV(Component->IndirectArgsBufferUAV)
+, bEnableFrustumCulling(Component->bEnableFrustumCulling)
+, bEnableDistanceCulling(Component->bEnableDistanceCulling)
+, MaxVisibleDistance(Component->MaxVisibleDistance)
+, GrassBoundingRadius(Component->GrassBoundingRadius)
+, Material(Component->GrassMaterial)
 {
     bVerifyUsedMaterials = false;
     
@@ -99,16 +117,32 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
     // When GPU Culling is properly implemented, switch to VisiblePositionBufferSRV
     if (bEnableFrustumCulling && bUseIndirectDraw && VisiblePositionBufferSRV.IsValid())
     {
-        // GPU Culling enabled: use VisiblePositionBufferSRV (will be filled by culling shader)
+        // GPU Culling enabled: use Visible buffers (will be filled by culling shader)
         VertexFactory.SetInstancePositionSRV(VisiblePositionBufferSRV.GetReference(), TotalInstanceCount);
-        UE_LOG(LogTemp, Log, TEXT("Using VisiblePositionBufferSRV for rendering (GPU Culling enabled, %d max instances)"), TotalInstanceCount);
+        
+        // 使用可见属性 Buffer（与位置同步的属性数据）
+        VertexFactory.SetGrassDataSRV(
+            VisibleGrassData0SRV.IsValid() ? VisibleGrassData0SRV.GetReference() : nullptr,
+            VisibleGrassData1SRV.IsValid() ? VisibleGrassData1SRV.GetReference() : nullptr,
+            VisibleGrassData2SRV.IsValid() ? VisibleGrassData2SRV.GetReference() : nullptr
+        );
+        UE_LOG(LogTemp, Log, TEXT("Using Visible Buffers for rendering (GPU Culling enabled, %d max instances)"), TotalInstanceCount);
     }
     else
     {
-        // No GPU Culling: use all positions
+        // No GPU Culling: use all positions and original grass data
         VertexFactory.SetInstancePositionSRV(PositionBufferSRV.GetReference(), TotalInstanceCount);
-        UE_LOG(LogTemp, Log, TEXT("Using PositionBufferSRV for rendering (%d instances)"), TotalInstanceCount);
+        
+        // Set grass blade data SRVs for Bezier deformation
+        VertexFactory.SetGrassDataSRV(
+            GrassData0SRV.IsValid() ? GrassData0SRV.GetReference() : nullptr,
+            GrassData1SRV.IsValid() ? GrassData1SRV.GetReference() : nullptr,
+            GrassData2SRV.IsValid() ? GrassData2SRV.GetReference() : nullptr
+        );
+        UE_LOG(LogTemp, Log, TEXT("Using original Buffers for rendering (%d instances)"), TotalInstanceCount);
     }
+    UE_LOG(LogTemp, Log, TEXT("Grass data SRVs set: Data0=%d, Data1=%d, Data2=%d"), 
+        GrassData0SRV.IsValid() ? 1 : 0, GrassData1SRV.IsValid() ? 1 : 0, GrassData2SRV.IsValid() ? 1 : 0);
 
     // 初始化 Mesh 数据
     if (Component->GrassMesh && Component->GrassMesh->GetRenderData() && 
@@ -225,37 +259,97 @@ void FGrassSceneProxy::InitFromStaticMesh(UStaticMesh* StaticMesh)
 
 void FGrassSceneProxy::InitDefaultGrassBlade()
 {
+    // High quality grass blade mesh with 15 vertices (7 segments)
+    // Original data: Vector3(0, Height, Width) where Width is signed (negative=left, positive=right)
+    // Unreal coordinate: X = Width (left/right), Y = 0 (depth), Z = Height (up)
+    // Scale: multiply by 100 to convert to centimeters
+    const float Scale = 100.0f;
+    
+    // 15 vertices arranged as pairs from bottom to top
+    // Index order matches original: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14
     TArray<FVector3f> Positions = {
-        FVector3f(-5, 0, 0),
-        FVector3f(5, 0, 0),
-        FVector3f(0, 0, 50)
+        FVector3f( 0.03445f * Scale, 0.0f, 0.15599f * Scale),  // 0: Row1 Right
+        FVector3f(-0.03444f * Scale, 0.0f, 0.0f),              // 1: Bottom Left
+        FVector3f( 0.03444f * Scale, 0.0f, 0.0f),              // 2: Bottom Right
+        FVector3f(-0.03445f * Scale, 0.0f, 0.15599f * Scale),  // 3: Row1 Left
+        FVector3f(-0.03193f * Scale, 0.0f, 0.27249f * Scale),  // 4: Row2 Left
+        FVector3f( 0.03193f * Scale, 0.0f, 0.27249f * Scale),  // 5: Row2 Right
+        FVector3f(-0.02942f * Scale, 0.0f, 0.38111f * Scale),  // 6: Row3 Left
+        FVector3f( 0.02942f * Scale, 0.0f, 0.38111f * Scale),  // 7: Row3 Right
+        FVector3f(-0.02620f * Scale, 0.0f, 0.47325f * Scale),  // 8: Row4 Left
+        FVector3f( 0.02620f * Scale, 0.0f, 0.47325f * Scale),  // 9: Row4 Right
+        FVector3f(-0.02338f * Scale, 0.0f, 0.55531f * Scale),  // 10: Row5 Left
+        FVector3f( 0.02338f * Scale, 0.0f, 0.55531f * Scale),  // 11: Row5 Right
+        FVector3f(-0.01728f * Scale, 0.0f, 0.63064f * Scale),  // 12: Row6 Left
+        FVector3f( 0.01728f * Scale, 0.0f, 0.63064f * Scale),  // 13: Row6 Right
+        FVector3f( 0.0f,             0.0f, 0.70819f * Scale),  // 14: Tip
     };
 
-    TArray<uint32> Indices = { 0, 1, 2 };
-    NumVertices = 3;
-    NumIndices = 3;
-    NumPrimitives = 1;
+    // 13 triangles - CCW winding for front face (normal pointing +Y)
+    // Bottom quad: vertices 1(BL), 2(BR), 0(R1R), 3(R1L)
+    // Then pairs going up: (3,0) -> (4,5) -> (6,7) -> (8,9) -> (10,11) -> (12,13) -> 14
+    TArray<uint32> Indices = {
+        // Bottom quad (2 triangles) - connecting bottom edge to row 1
+        1, 0, 2,    // BL -> R1R -> BR (front face)
+        1, 3, 0,    // BL -> R1L -> R1R (front face)
+        // Row 1 to Row 2
+        3, 5, 0,    // R1L -> R2R -> R1R
+        3, 4, 5,    // R1L -> R2L -> R2R
+        // Row 2 to Row 3
+        4, 7, 5,    // R2L -> R3R -> R2R
+        4, 6, 7,    // R2L -> R3L -> R3R
+        // Row 3 to Row 4
+        6, 9, 7,    // R3L -> R4R -> R3R
+        6, 8, 9,    // R3L -> R4L -> R4R
+        // Row 4 to Row 5
+        8, 11, 9,   // R4L -> R5R -> R4R
+        8, 10, 11,  // R4L -> R5L -> R5R
+        // Row 5 to Row 6
+        10, 13, 11, // R5L -> R6R -> R5R
+        10, 12, 13, // R5L -> R6L -> R6R
+        // Row 6 to Tip
+        12, 14, 13, // R6L -> Tip -> R6R
+    };
+
+    NumVertices = Positions.Num();
+    NumIndices = Indices.Num();
+    NumPrimitives = NumIndices / 3;
 
     VertexBuffers.PositionVertexBuffer.Init(Positions);
     VertexBuffers.StaticMeshVertexBuffer.Init(NumVertices, 1);
 
+    // Max height for UV calculation
+    const float MaxHeight = 0.70819f * Scale;
+    const float MaxWidth = 0.03445f * Scale;
+
     for (int32 i = 0; i < NumVertices; i++)
     {
-        VertexBuffers.StaticMeshVertexBuffer.SetVertexTangents(i, 
-            FVector3f(1, 0, 0), FVector3f(0, 1, 0), FVector3f(0, 0, 1));
-        VertexBuffers.StaticMeshVertexBuffer.SetVertexUV(i, 0, 
-            FVector2f(Positions[i].X / 10.0f + 0.5f, 1.0f - Positions[i].Z / 50.0f));
+        // Normal pointing in +Y direction (front facing)
+        FVector3f TangentX(1.0f, 0.0f, 0.0f);
+        FVector3f TangentZ(0.0f, 1.0f, 0.0f);  // Normal
+        FVector3f TangentY = FVector3f::CrossProduct(TangentZ, TangentX);
+        
+        VertexBuffers.StaticMeshVertexBuffer.SetVertexTangents(i, TangentX, TangentY, TangentZ);
+        
+        // UV: U = normalized X position (0-1), V = 1 - normalized height (1 at bottom, 0 at top)
+        float U = (Positions[i].X + MaxWidth) / (2.0f * MaxWidth);
+        float V = 1.0f - (Positions[i].Z / MaxHeight);
+        VertexBuffers.StaticMeshVertexBuffer.SetVertexUV(i, 0, FVector2f(FMath::Clamp(U, 0.0f, 1.0f), FMath::Clamp(V, 0.0f, 1.0f)));
     }
 
     VertexBuffers.ColorVertexBuffer.Init(NumVertices);
     for (int32 i = 0; i < NumVertices; i++)
     {
-        VertexBuffers.ColorVertexBuffer.VertexColor(i) = FColor::White;
+        // Store normalized height in alpha channel for wind animation
+        float HeightRatio = Positions[i].Z / MaxHeight;
+        uint8 HeightByte = static_cast<uint8>(FMath::Clamp(HeightRatio * 255.0f, 0.0f, 255.0f));
+        VertexBuffers.ColorVertexBuffer.VertexColor(i) = FColor(255, 255, 255, HeightByte);
     }
 
     IndexBuffer.SetIndices(Indices, EIndexBufferStride::Force32Bit);
     
-    UE_LOG(LogTemp, Log, TEXT("Initialized default grass blade (triangle)"));
+    UE_LOG(LogTemp, Log, TEXT("Initialized high-quality grass blade (%d vertices, %d triangles)"), 
+        NumVertices, NumPrimitives);
 }
 
 void FGrassSceneProxy::PerformGPUCullingRenderThread(FRHICommandListImmediate& RHICmdList, const FMatrix& ViewProjectionMatrix, const FVector& ViewOrigin, const FMatrix& LocalToWorldMatrix) const
@@ -289,12 +383,21 @@ void FGrassSceneProxy::PerformGPUCullingRenderThread(FRHICommandListImmediate& R
     // ========== Step 2: Execute Frustum Culling ==========
     {
         RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBuffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
 
         TShaderMapRef<FGrassFrustumCullingCS> CullingCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
         FGrassFrustumCullingCS::FParameters CullingParams;
         
         CullingParams.InPositions = PositionBufferSRV;
+        CullingParams.InGrassData0 = GrassData0SRV;
+        CullingParams.InGrassData1 = GrassData1SRV;
+        CullingParams.InGrassData2 = GrassData2SRV;
         CullingParams.OutVisiblePositions = VisiblePositionBufferUAV;
+        CullingParams.OutVisibleGrassData0 = VisibleGrassData0UAV;
+        CullingParams.OutVisibleGrassData1 = VisibleGrassData1UAV;
+        CullingParams.OutVisibleGrassData2 = VisibleGrassData2UAV;
         CullingParams.OutIndirectArgs = IndirectArgsBufferUAV;
         CullingParams.TotalInstanceCount = TotalInstanceCount;
         CullingParams.IndexCountPerInstance = NumIndices;
@@ -372,6 +475,9 @@ void FGrassSceneProxy::PerformGPUCullingRenderThread(FRHICommandListImmediate& R
 
     // ========== Step 3: Transition resource states ==========
     RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+    RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+    RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+    RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
     RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBuffer, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
 }
 
@@ -406,12 +512,21 @@ void FGrassSceneProxy::PerformGPUCulling(FRHICommandListImmediate& RHICmdList, c
     // ========== Step 2: 执行 Frustum Culling ==========
     {
         RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBuffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
 
         TShaderMapRef<FGrassFrustumCullingCS> CullingCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
         FGrassFrustumCullingCS::FParameters CullingParams;
         
         CullingParams.InPositions = PositionBufferSRV;
+        CullingParams.InGrassData0 = GrassData0SRV;
+        CullingParams.InGrassData1 = GrassData1SRV;
+        CullingParams.InGrassData2 = GrassData2SRV;
         CullingParams.OutVisiblePositions = VisiblePositionBufferUAV;
+        CullingParams.OutVisibleGrassData0 = VisibleGrassData0UAV;
+        CullingParams.OutVisibleGrassData1 = VisibleGrassData1UAV;
+        CullingParams.OutVisibleGrassData2 = VisibleGrassData2UAV;
         CullingParams.OutIndirectArgs = IndirectArgsBufferUAV;
         CullingParams.TotalInstanceCount = TotalInstanceCount;
         CullingParams.IndexCountPerInstance = NumIndices;
@@ -491,6 +606,9 @@ void FGrassSceneProxy::PerformGPUCulling(FRHICommandListImmediate& RHICmdList, c
 
     // ========== Step 3: 转换资源状态 ==========
     RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+    RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+    RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+    RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
     RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBuffer, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
 }
 

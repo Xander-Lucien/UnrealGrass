@@ -10,8 +10,20 @@
 // Input: All instance positions
 StructuredBuffer<float3> InPositions;
 
+// Input: Grass blade data (Height, Width, Tilt, Bend)
+StructuredBuffer<float4> InGrassData0;
+// Input: Grass blade data (TaperAmount, FacingDir.x, FacingDir.y, P1Offset)
+StructuredBuffer<float4> InGrassData1;
+// Input: Grass blade data (P2Offset)
+StructuredBuffer<float> InGrassData2;
+
 // Output: Visible instance positions
 RWStructuredBuffer<float3> OutVisiblePositions;
+
+// Output: Visible grass blade data (同步复制)
+RWStructuredBuffer<float4> OutVisibleGrassData0;
+RWStructuredBuffer<float4> OutVisibleGrassData1;
+RWStructuredBuffer<float> OutVisibleGrassData2;
 
 // Indirect Draw Args Buffer
 RWBuffer<uint> OutIndirectArgs;
@@ -78,13 +90,20 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
         bVisible = (DistSq <= MaxDistSq);
     }
     
-    // If visible, write position to output buffer
+    // If visible, write position AND grass data to output buffers
     if (bVisible)
     {
-        // Use atomic operation to get output index and write visible instance position
+        // Use atomic operation to get output index
         uint VisibleIndex = 0;
         InterlockedAdd(OutIndirectArgs[1], 1, VisibleIndex);
+        
+        // Write visible instance position
         OutVisiblePositions[VisibleIndex] = LocalPosition;
+        
+        // Write visible instance grass data (同步复制属性数据)
+        OutVisibleGrassData0[VisibleIndex] = InGrassData0[InstanceIndex];
+        OutVisibleGrassData1[VisibleIndex] = InGrassData1[InstanceIndex];
+        OutVisibleGrassData2[VisibleIndex] = InGrassData2[InstanceIndex];
     }
 }
 
