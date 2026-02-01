@@ -13,6 +13,10 @@ StructuredBuffer<float4> GrassData1;  // TaperAmount, FacingDir.x, FacingDir.y, 
 StructuredBuffer<float> GrassData2;   // P2Offset
 #endif
 
+// LOD 级别 (0 = LOD0 高质量, 1 = LOD1 简化版)
+// 用于在 Pixel Shader 中区分 LOD 以便调试验证
+uint GrassLODLevel;
+
 // ============================================================================
 // Bezier Curve Functions
 // ============================================================================
@@ -99,6 +103,9 @@ struct FVertexFactoryInterpolantsVSToPS
 #endif
 
     float4 Color : TEXCOORD3;
+    
+    // LOD 级别 (存储在 TEXCOORD4 中, x 分量为 LOD 级别)
+    nointerpolation float LODLevel : TEXCOORD4;
     
 #if INSTANCED_STEREO
     nointerpolation uint EyeIndex : PACKED_EYE_INDEX;
@@ -345,6 +352,19 @@ FMaterialPixelParameters GetMaterialPixelParameters(FVertexFactoryInterpolantsVS
 
     Result.VertexColor = Interpolants.Color;
     
+    // LOD 调试: 如果是 LOD 0，将顶点颜色设为红色；LOD 1 设为绿色
+    // 这样可以在材质中通过 Vertex Color 来区分 LOD 级别
+    if (Interpolants.LODLevel < 0.5)
+    {
+        // LOD 0 - 红色
+        Result.VertexColor = float4(1.0, 0.0, 0.0, 1.0);
+    }
+    else
+    {
+        // LOD 1 - 绿色  
+        Result.VertexColor = float4(0.0, 1.0, 0.0, 1.0);
+    }
+    
     half3 TangentToWorld0 = Interpolants.TangentToWorld0.xyz;
     half4 TangentToWorld2 = Interpolants.TangentToWorld2;
     Result.TangentToWorld = AssembleTangentToWorld(TangentToWorld0, TangentToWorld2);
@@ -408,6 +428,9 @@ FVertexFactoryInterpolantsVSToPS VertexFactoryGetInterpolantsVSToPS(FVertexFacto
 #endif
 
     Interpolants.Color = Intermediates.Color;
+    
+    // 传递 LOD 级别到 Pixel Shader
+    Interpolants.LODLevel = (float)GrassLODLevel;
     
     Interpolants.TangentToWorld0.xyz = Intermediates.TangentToWorld[0];
     Interpolants.TangentToWorld0.w = 0;

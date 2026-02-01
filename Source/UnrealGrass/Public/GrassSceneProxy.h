@@ -37,16 +37,27 @@ private:
     /** 从 UStaticMesh 初始化顶点和索引缓冲区 */
     void InitFromStaticMesh(UStaticMesh* StaticMesh);
     
-    /** 使用默认三角形草叶初始化 */
+    /** 使用默认三角形草叶初始化 (LOD 0 - 15 顶点高质量) */
     void InitDefaultGrassBlade();
 
-    // 草叶 Mesh
+    /** 初始化 LOD 1 草叶网格 (7 顶点简化版) */
+    void InitLOD1GrassBlade();
+
+    // ======== LOD 0 草叶 Mesh (15 顶点) ========
     FStaticMeshVertexBuffers VertexBuffers;
     FGrassVertexFactory VertexFactory;  // 使用自定义 Vertex Factory
     FRawStaticIndexBuffer IndexBuffer;
     int32 NumVertices = 0;
     int32 NumIndices = 0;
     int32 NumPrimitives = 0;  // 三角形数量
+
+    // ======== LOD 1 草叶 Mesh (7 顶点) ========
+    FStaticMeshVertexBuffers VertexBuffersLOD1;
+    FGrassVertexFactory VertexFactoryLOD1;  // LOD 1 专用 Vertex Factory
+    FRawStaticIndexBuffer IndexBufferLOD1;
+    int32 NumVerticesLOD1 = 0;
+    int32 NumIndicesLOD1 = 0;
+    int32 NumPrimitivesLOD1 = 0;
 
     // ======== 实例数据 ========
     // 所有实例位置 Buffer (用于 Culling 输入)
@@ -81,12 +92,37 @@ private:
     bool bUseIndirectDraw = false;
     FBufferRHIRef IndirectArgsBuffer;
     FUnorderedAccessViewRHIRef IndirectArgsBufferUAV;
+    
+    // LOD 1 的 Indirect Draw Args
+    FBufferRHIRef IndirectArgsBufferLOD1;
+    FUnorderedAccessViewRHIRef IndirectArgsBufferLOD1UAV;
+
+    // ======== LOD 1 独立的 Visible Buffers ========
+    FBufferRHIRef VisiblePositionBufferLOD1;
+    FShaderResourceViewRHIRef VisiblePositionBufferLOD1SRV;
+    FUnorderedAccessViewRHIRef VisiblePositionBufferLOD1UAV;
+    
+    FBufferRHIRef VisibleGrassData0BufferLOD1;
+    FShaderResourceViewRHIRef VisibleGrassData0BufferLOD1SRV;
+    FUnorderedAccessViewRHIRef VisibleGrassData0BufferLOD1UAV;
+    
+    FBufferRHIRef VisibleGrassData1BufferLOD1;
+    FShaderResourceViewRHIRef VisibleGrassData1BufferLOD1SRV;
+    FUnorderedAccessViewRHIRef VisibleGrassData1BufferLOD1UAV;
+    
+    FBufferRHIRef VisibleGrassData2BufferLOD1;
+    FShaderResourceViewRHIRef VisibleGrassData2BufferLOD1SRV;
+    FUnorderedAccessViewRHIRef VisibleGrassData2BufferLOD1UAV;
 
     // ======== GPU Culling 参数 ========
     bool bEnableFrustumCulling = false;
     bool bEnableDistanceCulling = false;
     float MaxVisibleDistance = 10000.0f;
     float GrassBoundingRadius = 50.0f;
+
+    // ======== LOD 参数 ========
+    bool bEnableLOD = true;
+float LOD0Distance = 1000.0f;
 
     // 标记当前帧是否已执行剔除
     mutable bool bCullingPerformedThisFrame = false;

@@ -116,6 +116,16 @@ public:
     UPROPERTY(EditAnywhere, Category = "Grass|Culling", meta = (ClampMin = "1.0"))
     float GrassBoundingRadius = 50.0f;
 
+    // ======== LOD 设置 ========
+    
+    /** 是否启用 LOD 系统 */
+    UPROPERTY(EditAnywhere, Category = "Grass|LOD")
+    bool bEnableLOD = true;
+
+    /** LOD 0 到 LOD 1 的切换距离（厘米）*/
+    UPROPERTY(EditAnywhere, Category = "Grass|LOD", meta = (ClampMin = "100.0", EditCondition = "bEnableLOD"))
+float LOD0Distance = 1000.0f;
+
     // ======== 丛簇参数 ========
     
     /** 草丛簇参数 */
@@ -191,6 +201,28 @@ public:
     // [4] StartInstanceLocation
     FBufferRHIRef IndirectArgsBuffer;
     FUnorderedAccessViewRHIRef IndirectArgsBufferUAV;
+
+    // LOD 1 的 Indirect Draw 参数 Buffer (用于简化版草叶)
+    FBufferRHIRef IndirectArgsBufferLOD1;
+    FUnorderedAccessViewRHIRef IndirectArgsBufferLOD1UAV;
+
+    // ======== LOD 1 独立的 Visible Buffers ========
+    // LOD 1 使用独立的 buffer，避免与 LOD 0 数据冲突
+    FBufferRHIRef VisiblePositionBufferLOD1;
+    FShaderResourceViewRHIRef VisiblePositionBufferLOD1SRV;
+    FUnorderedAccessViewRHIRef VisiblePositionBufferLOD1UAV;
+    
+    FBufferRHIRef VisibleGrassData0BufferLOD1;
+    FShaderResourceViewRHIRef VisibleGrassData0BufferLOD1SRV;
+    FUnorderedAccessViewRHIRef VisibleGrassData0BufferLOD1UAV;
+    
+    FBufferRHIRef VisibleGrassData1BufferLOD1;
+    FShaderResourceViewRHIRef VisibleGrassData1BufferLOD1SRV;
+    FUnorderedAccessViewRHIRef VisibleGrassData1BufferLOD1UAV;
+    
+    FBufferRHIRef VisibleGrassData2BufferLOD1;
+    FShaderResourceViewRHIRef VisibleGrassData2BufferLOD1SRV;
+    FUnorderedAccessViewRHIRef VisibleGrassData2BufferLOD1UAV;
 
     // 用于传递给 SceneProxy 的 Mesh 信息
     int32 NumIndices = 0;

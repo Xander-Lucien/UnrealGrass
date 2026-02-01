@@ -16,7 +16,7 @@
 
 
 // ============================================================================
-// GPU Frustum Culling Compute Shader
+// GPU Frustum Culling Compute Shader (支持 LOD)
 // ============================================================================
 class FGrassFrustumCullingCS : public FGlobalShader
 {
@@ -33,13 +33,20 @@ public:
         SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector4f>, OutVisibleGrassData0)
         SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector4f>, OutVisibleGrassData1)
         SHADER_PARAMETER_UAV(RWStructuredBuffer<float>, OutVisibleGrassData2)
+        SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector3f>, OutVisiblePositionsLOD1)  // LOD 1 独立输出
+        SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector4f>, OutVisibleGrassData0LOD1)
+        SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector4f>, OutVisibleGrassData1LOD1)
+        SHADER_PARAMETER_UAV(RWStructuredBuffer<float>, OutVisibleGrassData2LOD1)
         SHADER_PARAMETER_UAV(RWBuffer<uint>, OutIndirectArgs)
+        SHADER_PARAMETER_UAV(RWBuffer<uint>, OutIndirectArgsLOD1)  // LOD 1 的 Indirect Args
         SHADER_PARAMETER(uint32, TotalInstanceCount)
         SHADER_PARAMETER(uint32, IndexCountPerInstance)
+        SHADER_PARAMETER(uint32, IndexCountPerInstanceLOD1)  // LOD 1 的索引数量
         SHADER_PARAMETER_ARRAY(FVector4f, FrustumPlanes, [6])
         SHADER_PARAMETER(FMatrix44f, LocalToWorld)
         SHADER_PARAMETER(float, BoundingRadius)
         SHADER_PARAMETER(float, MaxVisibleDistance)
+        SHADER_PARAMETER(float, LOD0Distance)  // LOD 切换距离
         SHADER_PARAMETER(FVector3f, CameraPosition)
     END_SHADER_PARAMETER_STRUCT()
 
@@ -51,7 +58,7 @@ public:
 
 IMPLEMENT_GLOBAL_SHADER(FGrassFrustumCullingCS, "/Plugin/UnrealGrass/Private/GrassFrustumCulling.usf", "MainCS", SF_Compute);
 
-// 重置 Indirect Args 的 Compute Shader
+// 重置 Indirect Args 的 Compute Shader (支持 LOD)
 class FGrassResetIndirectArgsCS : public FGlobalShader
 {
 public:
@@ -60,7 +67,10 @@ public:
 
     BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
         SHADER_PARAMETER_UAV(RWBuffer<uint>, OutIndirectArgs)
+        SHADER_PARAMETER_UAV(RWBuffer<uint>, OutIndirectArgsLOD1)  // LOD 1 的 Indirect Args
         SHADER_PARAMETER(uint32, IndexCountPerInstance)
+        SHADER_PARAMETER(uint32, IndexCountPerInstanceLOD1)  // LOD 1 的索引数量
+        SHADER_PARAMETER(uint32, TotalInstanceCount)  // 用于计算 LOD 1 的 StartInstanceLocation
     END_SHADER_PARAMETER_STRUCT()
 
     static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -78,6 +88,7 @@ IMPLEMENT_GLOBAL_SHADER(FGrassResetIndirectArgsCS, "/Plugin/UnrealGrass/Private/
 FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
 : FPrimitiveSceneProxy(Component)
 , VertexFactory(GetScene().GetFeatureLevel(), "GrassVertexFactory")
+, VertexFactoryLOD1(GetScene().GetFeatureLevel(), "GrassVertexFactoryLOD1")  // LOD 1 Vertex Factory
 , PositionBuffer(Component->PositionBuffer)
 , PositionBufferSRV(Component->PositionBufferSRV)
 , TotalInstanceCount(Component->InstanceCount)
@@ -99,10 +110,26 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
 , bUseIndirectDraw(Component->bUseIndirectDraw)
 , IndirectArgsBuffer(Component->IndirectArgsBuffer)
 , IndirectArgsBufferUAV(Component->IndirectArgsBufferUAV)
+, IndirectArgsBufferLOD1(Component->IndirectArgsBufferLOD1)  // LOD 1 Indirect Args
+, IndirectArgsBufferLOD1UAV(Component->IndirectArgsBufferLOD1UAV)
+, VisiblePositionBufferLOD1(Component->VisiblePositionBufferLOD1)  // LOD 1 独立 Visible Buffers
+, VisiblePositionBufferLOD1SRV(Component->VisiblePositionBufferLOD1SRV)
+, VisiblePositionBufferLOD1UAV(Component->VisiblePositionBufferLOD1UAV)
+, VisibleGrassData0BufferLOD1(Component->VisibleGrassData0BufferLOD1)
+, VisibleGrassData0BufferLOD1SRV(Component->VisibleGrassData0BufferLOD1SRV)
+, VisibleGrassData0BufferLOD1UAV(Component->VisibleGrassData0BufferLOD1UAV)
+, VisibleGrassData1BufferLOD1(Component->VisibleGrassData1BufferLOD1)
+, VisibleGrassData1BufferLOD1SRV(Component->VisibleGrassData1BufferLOD1SRV)
+, VisibleGrassData1BufferLOD1UAV(Component->VisibleGrassData1BufferLOD1UAV)
+, VisibleGrassData2BufferLOD1(Component->VisibleGrassData2BufferLOD1)
+, VisibleGrassData2BufferLOD1SRV(Component->VisibleGrassData2BufferLOD1SRV)
+, VisibleGrassData2BufferLOD1UAV(Component->VisibleGrassData2BufferLOD1UAV)
 , bEnableFrustumCulling(Component->bEnableFrustumCulling)
 , bEnableDistanceCulling(Component->bEnableDistanceCulling)
 , MaxVisibleDistance(Component->MaxVisibleDistance)
 , GrassBoundingRadius(Component->GrassBoundingRadius)
+, bEnableLOD(Component->bEnableLOD)  // LOD 参数
+, LOD0Distance(Component->LOD0Distance)
 , Material(Component->GrassMaterial)
 {
     bVerifyUsedMaterials = false;
@@ -144,7 +171,7 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
     UE_LOG(LogTemp, Log, TEXT("Grass data SRVs set: Data0=%d, Data1=%d, Data2=%d"), 
         GrassData0SRV.IsValid() ? 1 : 0, GrassData1SRV.IsValid() ? 1 : 0, GrassData2SRV.IsValid() ? 1 : 0);
 
-    // 初始化 Mesh 数据
+    // 初始化 LOD 0 Mesh 数据
     if (Component->GrassMesh && Component->GrassMesh->GetRenderData() && 
         Component->GrassMesh->GetRenderData()->LODResources.Num() > 0)
     {
@@ -154,15 +181,51 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
     {
         InitDefaultGrassBlade();
     }
+    
+    // 设置 LOD 0 的 LOD 级别
+    VertexFactory.SetLODLevel(0);
 
-    // 初始化渲染资源
+    // 初始化 LOD 1 Mesh 数据 (7 顶点简化版)
+    InitLOD1GrassBlade();
+    
+    // 为 LOD 1 Vertex Factory 设置 SRV (使用 LOD 1 独立的 Visible Buffers)
+    if (bEnableFrustumCulling && bUseIndirectDraw && VisiblePositionBufferLOD1SRV.IsValid())
+    {
+        VertexFactoryLOD1.SetInstancePositionSRV(VisiblePositionBufferLOD1SRV.GetReference(), TotalInstanceCount);
+        VertexFactoryLOD1.SetGrassDataSRV(
+            VisibleGrassData0BufferLOD1SRV.IsValid() ? VisibleGrassData0BufferLOD1SRV.GetReference() : nullptr,
+            VisibleGrassData1BufferLOD1SRV.IsValid() ? VisibleGrassData1BufferLOD1SRV.GetReference() : nullptr,
+            VisibleGrassData2BufferLOD1SRV.IsValid() ? VisibleGrassData2BufferLOD1SRV.GetReference() : nullptr
+        );
+    }
+    else
+    {
+        VertexFactoryLOD1.SetInstancePositionSRV(PositionBufferSRV.GetReference(), TotalInstanceCount);
+        VertexFactoryLOD1.SetGrassDataSRV(
+            GrassData0SRV.IsValid() ? GrassData0SRV.GetReference() : nullptr,
+            GrassData1SRV.IsValid() ? GrassData1SRV.GetReference() : nullptr,
+            GrassData2SRV.IsValid() ? GrassData2SRV.GetReference() : nullptr
+        );
+    }
+    
+    // 设置 LOD 1 的 LOD 级别
+    VertexFactoryLOD1.SetLODLevel(1);
+
+    // 初始化渲染资源 (LOD 0)
     FStaticMeshVertexBuffers* VertexBuffersPtr = &VertexBuffers;
     FRawStaticIndexBuffer* IndexBufferPtr = &IndexBuffer;
     FGrassVertexFactory* VertexFactoryPtr = &VertexFactory;
     
+    // 初始化渲染资源 (LOD 1)
+    FStaticMeshVertexBuffers* VertexBuffersLOD1Ptr = &VertexBuffersLOD1;
+    FRawStaticIndexBuffer* IndexBufferLOD1Ptr = &IndexBufferLOD1;
+    FGrassVertexFactory* VertexFactoryLOD1Ptr = &VertexFactoryLOD1;
+    
     ENQUEUE_RENDER_COMMAND(InitGrassResources)(
-        [VertexBuffersPtr, IndexBufferPtr, VertexFactoryPtr](FRHICommandListImmediate& RHICmdList)
+        [VertexBuffersPtr, IndexBufferPtr, VertexFactoryPtr, 
+         VertexBuffersLOD1Ptr, IndexBufferLOD1Ptr, VertexFactoryLOD1Ptr](FRHICommandListImmediate& RHICmdList)
         {
+            // 初始化 LOD 0 资源
             VertexBuffersPtr->PositionVertexBuffer.InitResource(RHICmdList);
             VertexBuffersPtr->StaticMeshVertexBuffer.InitResource(RHICmdList);
             VertexBuffersPtr->ColorVertexBuffer.InitResource(RHICmdList);
@@ -177,6 +240,22 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
             
             VertexFactoryPtr->SetData(RHICmdList, Data);
             VertexFactoryPtr->InitResource(RHICmdList);
+
+            // 初始化 LOD 1 资源
+            VertexBuffersLOD1Ptr->PositionVertexBuffer.InitResource(RHICmdList);
+            VertexBuffersLOD1Ptr->StaticMeshVertexBuffer.InitResource(RHICmdList);
+            VertexBuffersLOD1Ptr->ColorVertexBuffer.InitResource(RHICmdList);
+            IndexBufferLOD1Ptr->InitResource(RHICmdList);
+
+            FLocalVertexFactory::FDataType DataLOD1;
+            VertexBuffersLOD1Ptr->PositionVertexBuffer.BindPositionVertexBuffer(VertexFactoryLOD1Ptr, DataLOD1);
+            VertexBuffersLOD1Ptr->StaticMeshVertexBuffer.BindTangentVertexBuffer(VertexFactoryLOD1Ptr, DataLOD1);
+            VertexBuffersLOD1Ptr->StaticMeshVertexBuffer.BindPackedTexCoordVertexBuffer(VertexFactoryLOD1Ptr, DataLOD1);
+            VertexBuffersLOD1Ptr->StaticMeshVertexBuffer.BindLightMapVertexBuffer(VertexFactoryLOD1Ptr, DataLOD1, 0);
+            VertexBuffersLOD1Ptr->ColorVertexBuffer.BindColorVertexBuffer(VertexFactoryLOD1Ptr, DataLOD1);
+            
+            VertexFactoryLOD1Ptr->SetData(RHICmdList, DataLOD1);
+            VertexFactoryLOD1Ptr->InitResource(RHICmdList);
         }
     );
     
@@ -188,8 +267,9 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
         FGrassCullingViewExtension::Get()->RegisterGrassProxy(this);
     }
     
-    UE_LOG(LogTemp, Log, TEXT("FGrassSceneProxy created: %d instances, %d vertices, %d triangles, IndirectDraw=%d, FrustumCulling=%d"), 
-        TotalInstanceCount, NumVertices, NumPrimitives, bUseIndirectDraw ? 1 : 0, bEnableFrustumCulling ? 1 : 0);
+    UE_LOG(LogTemp, Log, TEXT("FGrassSceneProxy created: %d instances, LOD0=%d verts/%d tris, LOD1=%d verts/%d tris, IndirectDraw=%d, FrustumCulling=%d, LOD=%d (dist=%.0f)"), 
+        TotalInstanceCount, NumVertices, NumPrimitives, NumVerticesLOD1, NumPrimitivesLOD1, 
+        bUseIndirectDraw ? 1 : 0, bEnableFrustumCulling ? 1 : 0, bEnableLOD ? 1 : 0, LOD0Distance);
 }
 
 void FGrassSceneProxy::InitFromStaticMesh(UStaticMesh* StaticMesh)
@@ -348,8 +428,79 @@ void FGrassSceneProxy::InitDefaultGrassBlade()
 
     IndexBuffer.SetIndices(Indices, EIndexBufferStride::Force32Bit);
     
-    UE_LOG(LogTemp, Log, TEXT("Initialized high-quality grass blade (%d vertices, %d triangles)"), 
+    UE_LOG(LogTemp, Log, TEXT("Initialized high-quality grass blade LOD0 (%d vertices, %d triangles)"), 
         NumVertices, NumPrimitives);
+}
+
+void FGrassSceneProxy::InitLOD1GrassBlade()
+{
+    // LOD 1: Simplified grass blade mesh with 7 vertices (3 segments)
+    // Same scale and coordinate system as LOD 0
+    const float Scale = 100.0f;
+    
+    // 7 vertices: Bottom pair, Middle pair, Upper pair, Tip
+    // Simplified from 15 vertices to 7 vertices
+    TArray<FVector3f> Positions = {
+        FVector3f(-0.03444f * Scale, 0.0f, 0.0f),              // 0: Bottom Left
+        FVector3f( 0.03444f * Scale, 0.0f, 0.0f),              // 1: Bottom Right
+        FVector3f(-0.03193f * Scale, 0.0f, 0.27249f * Scale),  // 2: Middle Left
+        FVector3f( 0.03193f * Scale, 0.0f, 0.27249f * Scale),  // 3: Middle Right
+        FVector3f(-0.02338f * Scale, 0.0f, 0.55531f * Scale),  // 4: Upper Left
+        FVector3f( 0.02338f * Scale, 0.0f, 0.55531f * Scale),  // 5: Upper Right
+        FVector3f( 0.0f,             0.0f, 0.70819f * Scale),  // 6: Tip
+    };
+
+    // 5 triangles - CCW winding for front face
+    TArray<uint32> Indices = {
+        // Bottom to Middle
+        0, 3, 1,    // BL -> MR -> BR
+        0, 2, 3,    // BL -> ML -> MR
+        // Middle to Upper
+        2, 5, 3,    // ML -> UR -> MR
+        2, 4, 5,    // ML -> UL -> UR
+        // Upper to Tip
+        4, 6, 5,    // UL -> Tip -> UR
+    };
+
+    NumVerticesLOD1 = Positions.Num();
+    NumIndicesLOD1 = Indices.Num();
+    NumPrimitivesLOD1 = NumIndicesLOD1 / 3;
+
+    VertexBuffersLOD1.PositionVertexBuffer.Init(Positions);
+    VertexBuffersLOD1.StaticMeshVertexBuffer.Init(NumVerticesLOD1, 1);
+
+    // Max height for UV calculation (same as LOD 0)
+    const float MaxHeight = 0.70819f * Scale;
+    const float MaxWidth = 0.03444f * Scale;
+
+    for (int32 i = 0; i < NumVerticesLOD1; i++)
+    {
+        // Normal pointing in +Y direction (front facing)
+        FVector3f TangentX(1.0f, 0.0f, 0.0f);
+        FVector3f TangentZ(0.0f, 1.0f, 0.0f);  // Normal
+        FVector3f TangentY = FVector3f::CrossProduct(TangentZ, TangentX);
+        
+        VertexBuffersLOD1.StaticMeshVertexBuffer.SetVertexTangents(i, TangentX, TangentY, TangentZ);
+        
+        // UV: U = normalized X position (0-1), V = 1 - normalized height (1 at bottom, 0 at top)
+        float U = (Positions[i].X + MaxWidth) / (2.0f * MaxWidth);
+        float V = 1.0f - (Positions[i].Z / MaxHeight);
+        VertexBuffersLOD1.StaticMeshVertexBuffer.SetVertexUV(i, 0, FVector2f(FMath::Clamp(U, 0.0f, 1.0f), FMath::Clamp(V, 0.0f, 1.0f)));
+    }
+
+    VertexBuffersLOD1.ColorVertexBuffer.Init(NumVerticesLOD1);
+    for (int32 i = 0; i < NumVerticesLOD1; i++)
+    {
+        // Store normalized height in alpha channel for wind animation
+        float HeightRatio = Positions[i].Z / MaxHeight;
+        uint8 HeightByte = static_cast<uint8>(FMath::Clamp(HeightRatio * 255.0f, 0.0f, 255.0f));
+        VertexBuffersLOD1.ColorVertexBuffer.VertexColor(i) = FColor(255, 255, 255, HeightByte);
+    }
+
+    IndexBufferLOD1.SetIndices(Indices, EIndexBufferStride::Force32Bit);
+    
+    UE_LOG(LogTemp, Log, TEXT("Initialized simplified grass blade LOD1 (%d vertices, %d triangles)"), 
+        NumVerticesLOD1, NumPrimitivesLOD1);
 }
 
 void FGrassSceneProxy::PerformGPUCullingRenderThread(FRHICommandListImmediate& RHICmdList, const FMatrix& ViewProjectionMatrix, const FVector& ViewOrigin, const FMatrix& LocalToWorldMatrix) const
@@ -368,14 +519,21 @@ void FGrassSceneProxy::PerformGPUCullingRenderThread(FRHICommandListImmediate& R
     bCullingPerformedThisFrame = true;
     LastFrameNumber = CurrentFrameNumber;
 
-    // ========== Step 1: Reset Indirect Args Buffer ==========
+    // ========== Step 1: Reset Indirect Args Buffer (LOD 0 and LOD 1) ==========
     {
         RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBuffer, ERHIAccess::IndirectArgs, ERHIAccess::UAVCompute));
+        if (bEnableLOD && IndirectArgsBufferLOD1.IsValid())
+        {
+            RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBufferLOD1, ERHIAccess::IndirectArgs, ERHIAccess::UAVCompute));
+        }
 
         TShaderMapRef<FGrassResetIndirectArgsCS> ResetCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
         FGrassResetIndirectArgsCS::FParameters ResetParams;
         ResetParams.OutIndirectArgs = IndirectArgsBufferUAV;
+        ResetParams.OutIndirectArgsLOD1 = (bEnableLOD && IndirectArgsBufferLOD1UAV.IsValid()) ? IndirectArgsBufferLOD1UAV : IndirectArgsBufferUAV;
         ResetParams.IndexCountPerInstance = NumIndices;
+        ResetParams.IndexCountPerInstanceLOD1 = NumIndicesLOD1;
+        ResetParams.TotalInstanceCount = TotalInstanceCount;
         
         FComputeShaderUtils::Dispatch(RHICmdList, ResetCS, ResetParams, FIntVector(1, 1, 1));
     }
@@ -386,6 +544,15 @@ void FGrassSceneProxy::PerformGPUCullingRenderThread(FRHICommandListImmediate& R
         RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
         RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
         RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+        
+        // LOD 1 独立 Buffer 状态转换
+        if (bEnableLOD && VisiblePositionBufferLOD1.IsValid())
+        {
+            RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBufferLOD1, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+            RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0BufferLOD1, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+            RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1BufferLOD1, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+            RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2BufferLOD1, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+        }
 
         TShaderMapRef<FGrassFrustumCullingCS> CullingCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
         FGrassFrustumCullingCS::FParameters CullingParams;
@@ -398,9 +565,17 @@ void FGrassSceneProxy::PerformGPUCullingRenderThread(FRHICommandListImmediate& R
         CullingParams.OutVisibleGrassData0 = VisibleGrassData0UAV;
         CullingParams.OutVisibleGrassData1 = VisibleGrassData1UAV;
         CullingParams.OutVisibleGrassData2 = VisibleGrassData2UAV;
+        // LOD 1 独立输出 Buffers
+        CullingParams.OutVisiblePositionsLOD1 = (bEnableLOD && VisiblePositionBufferLOD1UAV.IsValid()) ? VisiblePositionBufferLOD1UAV : VisiblePositionBufferUAV;
+        CullingParams.OutVisibleGrassData0LOD1 = (bEnableLOD && VisibleGrassData0BufferLOD1UAV.IsValid()) ? VisibleGrassData0BufferLOD1UAV : VisibleGrassData0UAV;
+        CullingParams.OutVisibleGrassData1LOD1 = (bEnableLOD && VisibleGrassData1BufferLOD1UAV.IsValid()) ? VisibleGrassData1BufferLOD1UAV : VisibleGrassData1UAV;
+        CullingParams.OutVisibleGrassData2LOD1 = (bEnableLOD && VisibleGrassData2BufferLOD1UAV.IsValid()) ? VisibleGrassData2BufferLOD1UAV : VisibleGrassData2UAV;
         CullingParams.OutIndirectArgs = IndirectArgsBufferUAV;
+        CullingParams.OutIndirectArgsLOD1 = (bEnableLOD && IndirectArgsBufferLOD1UAV.IsValid()) ? IndirectArgsBufferLOD1UAV : IndirectArgsBufferUAV;
         CullingParams.TotalInstanceCount = TotalInstanceCount;
         CullingParams.IndexCountPerInstance = NumIndices;
+        CullingParams.IndexCountPerInstanceLOD1 = NumIndicesLOD1;
+        CullingParams.LOD0Distance = bEnableLOD ? LOD0Distance : 0.0f;
         
         // Extract frustum planes from ViewProjectionMatrix
         FPlane FrustumPlanes[6];
@@ -479,6 +654,18 @@ void FGrassSceneProxy::PerformGPUCullingRenderThread(FRHICommandListImmediate& R
     RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
     RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
     RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBuffer, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
+    if (bEnableLOD && IndirectArgsBufferLOD1.IsValid())
+    {
+        RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
+    }
+    // LOD 1 独立 Buffer 状态转换
+    if (bEnableLOD && VisiblePositionBufferLOD1.IsValid())
+    {
+        RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+    }
 }
 
 void FGrassSceneProxy::PerformGPUCulling(FRHICommandListImmediate& RHICmdList, const FSceneView* View) const
@@ -497,14 +684,21 @@ void FGrassSceneProxy::PerformGPUCulling(FRHICommandListImmediate& RHICmdList, c
     bCullingPerformedThisFrame = true;
     LastFrameNumber = CurrentFrameNumber;
 
-    // ========== Step 1: 重置 Indirect Args Buffer ==========
+    // ========== Step 1: 重置 Indirect Args Buffer (LOD 0 和 LOD 1) ==========
     {
         RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBuffer, ERHIAccess::IndirectArgs, ERHIAccess::UAVCompute));
+        if (bEnableLOD && IndirectArgsBufferLOD1.IsValid())
+        {
+            RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBufferLOD1, ERHIAccess::IndirectArgs, ERHIAccess::UAVCompute));
+        }
 
         TShaderMapRef<FGrassResetIndirectArgsCS> ResetCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
         FGrassResetIndirectArgsCS::FParameters ResetParams;
         ResetParams.OutIndirectArgs = IndirectArgsBufferUAV;
+        ResetParams.OutIndirectArgsLOD1 = (bEnableLOD && IndirectArgsBufferLOD1UAV.IsValid()) ? IndirectArgsBufferLOD1UAV : IndirectArgsBufferUAV;
         ResetParams.IndexCountPerInstance = NumIndices;
+        ResetParams.IndexCountPerInstanceLOD1 = NumIndicesLOD1;
+        ResetParams.TotalInstanceCount = TotalInstanceCount;
         
         FComputeShaderUtils::Dispatch(RHICmdList, ResetCS, ResetParams, FIntVector(1, 1, 1));
     }
@@ -515,6 +709,15 @@ void FGrassSceneProxy::PerformGPUCulling(FRHICommandListImmediate& RHICmdList, c
         RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
         RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
         RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+        
+        // LOD 1 独立 Buffer 状态转换
+        if (bEnableLOD && VisiblePositionBufferLOD1.IsValid())
+        {
+            RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBufferLOD1, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+            RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0BufferLOD1, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+            RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1BufferLOD1, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+            RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2BufferLOD1, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+        }
 
         TShaderMapRef<FGrassFrustumCullingCS> CullingCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
         FGrassFrustumCullingCS::FParameters CullingParams;
@@ -527,9 +730,17 @@ void FGrassSceneProxy::PerformGPUCulling(FRHICommandListImmediate& RHICmdList, c
         CullingParams.OutVisibleGrassData0 = VisibleGrassData0UAV;
         CullingParams.OutVisibleGrassData1 = VisibleGrassData1UAV;
         CullingParams.OutVisibleGrassData2 = VisibleGrassData2UAV;
+        // LOD 1 独立输出 Buffers
+        CullingParams.OutVisiblePositionsLOD1 = (bEnableLOD && VisiblePositionBufferLOD1UAV.IsValid()) ? VisiblePositionBufferLOD1UAV : VisiblePositionBufferUAV;
+        CullingParams.OutVisibleGrassData0LOD1 = (bEnableLOD && VisibleGrassData0BufferLOD1UAV.IsValid()) ? VisibleGrassData0BufferLOD1UAV : VisibleGrassData0UAV;
+        CullingParams.OutVisibleGrassData1LOD1 = (bEnableLOD && VisibleGrassData1BufferLOD1UAV.IsValid()) ? VisibleGrassData1BufferLOD1UAV : VisibleGrassData1UAV;
+        CullingParams.OutVisibleGrassData2LOD1 = (bEnableLOD && VisibleGrassData2BufferLOD1UAV.IsValid()) ? VisibleGrassData2BufferLOD1UAV : VisibleGrassData2UAV;
         CullingParams.OutIndirectArgs = IndirectArgsBufferUAV;
+        CullingParams.OutIndirectArgsLOD1 = (bEnableLOD && IndirectArgsBufferLOD1UAV.IsValid()) ? IndirectArgsBufferLOD1UAV : IndirectArgsBufferUAV;
         CullingParams.TotalInstanceCount = TotalInstanceCount;
         CullingParams.IndexCountPerInstance = NumIndices;
+        CullingParams.IndexCountPerInstanceLOD1 = NumIndicesLOD1;
+        CullingParams.LOD0Distance = bEnableLOD ? LOD0Distance : 0.0f;
         
         // 提取视锥平面
         const FMatrix ViewProjectionMatrix = View->ViewMatrices.GetViewProjectionMatrix();
@@ -610,6 +821,18 @@ void FGrassSceneProxy::PerformGPUCulling(FRHICommandListImmediate& RHICmdList, c
     RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
     RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
     RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBuffer, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
+    if (bEnableLOD && IndirectArgsBufferLOD1.IsValid())
+    {
+        RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
+    }
+    // LOD 1 独立 Buffer 状态转换
+    if (bEnableLOD && VisiblePositionBufferLOD1.IsValid())
+    {
+        RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+    }
 }
 
 FGrassSceneProxy::~FGrassSceneProxy()
@@ -623,11 +846,19 @@ FGrassSceneProxy::~FGrassSceneProxy()
         }
     }
     
+    // 释放 LOD 0 资源
     VertexBuffers.PositionVertexBuffer.ReleaseResource();
     VertexBuffers.StaticMeshVertexBuffer.ReleaseResource();
     VertexBuffers.ColorVertexBuffer.ReleaseResource();
     IndexBuffer.ReleaseResource();
     VertexFactory.ReleaseResource();
+    
+    // 释放 LOD 1 资源
+    VertexBuffersLOD1.PositionVertexBuffer.ReleaseResource();
+    VertexBuffersLOD1.StaticMeshVertexBuffer.ReleaseResource();
+    VertexBuffersLOD1.ColorVertexBuffer.ReleaseResource();
+    IndexBufferLOD1.ReleaseResource();
+    VertexFactoryLOD1.ReleaseResource();
 }
 
 SIZE_T FGrassSceneProxy::GetTypeHash() const
@@ -685,39 +916,71 @@ void FGrassSceneProxy::GetDynamicMeshElements(
             continue;
         }
 
-        FMeshBatch& Mesh = Collector.AllocateMesh();
-        Mesh.VertexFactory = &VertexFactory;
-        Mesh.MaterialRenderProxy = MaterialProxy;
-        Mesh.Type = PT_TriangleList;
-        Mesh.DepthPriorityGroup = SDPG_World;
-        Mesh.bCanApplyViewModeOverrides = true;
-        Mesh.ReverseCulling = false;
-        Mesh.CastShadow = false;
-        Mesh.bDisableBackfaceCulling = true;
-
-        FMeshBatchElement& Element = Mesh.Elements[0];
-        Element.IndexBuffer = &IndexBuffer;
-        Element.FirstIndex = 0;
-        Element.MinVertexIndex = 0;
-        Element.MaxVertexIndex = NumVertices - 1;
-        Element.PrimitiveUniformBuffer = GetUniformBuffer();
-
-        if (bUseIndirectDraw && IndirectArgsBuffer.IsValid())
+        // ========== LOD 0: 高质量草叶 (15 顶点) ==========
         {
-            // Indirect Draw: GPU driven draw call
-            Element.NumPrimitives = 0;
-            Element.NumInstances = 0;
-            Element.IndirectArgsBuffer = IndirectArgsBuffer;
-            Element.IndirectArgsOffset = 0;
-        }
-        else
-        {
-            // Standard GPU Instancing (without culling)
-            Element.NumPrimitives = NumPrimitives;
-            Element.NumInstances = TotalInstanceCount;
+            FMeshBatch& Mesh = Collector.AllocateMesh();
+            Mesh.VertexFactory = &VertexFactory;
+            Mesh.MaterialRenderProxy = MaterialProxy;
+            Mesh.Type = PT_TriangleList;
+            Mesh.DepthPriorityGroup = SDPG_World;
+            Mesh.bCanApplyViewModeOverrides = true;
+            Mesh.ReverseCulling = false;
+            Mesh.CastShadow = false;
+            Mesh.bDisableBackfaceCulling = true;
+
+            FMeshBatchElement& Element = Mesh.Elements[0];
+            Element.IndexBuffer = &IndexBuffer;
+            Element.FirstIndex = 0;
+            Element.MinVertexIndex = 0;
+            Element.MaxVertexIndex = NumVertices - 1;
+            Element.PrimitiveUniformBuffer = GetUniformBuffer();
+
+            if (bUseIndirectDraw && IndirectArgsBuffer.IsValid())
+            {
+                // Indirect Draw: GPU driven draw call
+                Element.NumPrimitives = 0;
+                Element.NumInstances = 0;
+                Element.IndirectArgsBuffer = IndirectArgsBuffer;
+                Element.IndirectArgsOffset = 0;
+            }
+            else
+            {
+                // Standard GPU Instancing (without culling)
+                Element.NumPrimitives = NumPrimitives;
+                Element.NumInstances = TotalInstanceCount;
+            }
+
+            Collector.AddMesh(ViewIndex, Mesh);
         }
 
-        Collector.AddMesh(ViewIndex, Mesh);
+        // ========== LOD 1: 简化草叶 (7 顶点) ==========
+        if (bEnableLOD && VertexFactoryLOD1.IsInitialized() && bUseIndirectDraw && IndirectArgsBufferLOD1.IsValid())
+        {
+            FMeshBatch& MeshLOD1 = Collector.AllocateMesh();
+            MeshLOD1.VertexFactory = &VertexFactoryLOD1;
+            MeshLOD1.MaterialRenderProxy = MaterialProxy;
+            MeshLOD1.Type = PT_TriangleList;
+            MeshLOD1.DepthPriorityGroup = SDPG_World;
+            MeshLOD1.bCanApplyViewModeOverrides = true;
+            MeshLOD1.ReverseCulling = false;
+            MeshLOD1.CastShadow = false;
+            MeshLOD1.bDisableBackfaceCulling = true;
+
+            FMeshBatchElement& ElementLOD1 = MeshLOD1.Elements[0];
+            ElementLOD1.IndexBuffer = &IndexBufferLOD1;
+            ElementLOD1.FirstIndex = 0;
+            ElementLOD1.MinVertexIndex = 0;
+            ElementLOD1.MaxVertexIndex = NumVerticesLOD1 - 1;
+            ElementLOD1.PrimitiveUniformBuffer = GetUniformBuffer();
+
+            // LOD 1 uses its own IndirectArgsBuffer
+            ElementLOD1.NumPrimitives = 0;
+            ElementLOD1.NumInstances = 0;
+            ElementLOD1.IndirectArgsBuffer = IndirectArgsBufferLOD1;
+            ElementLOD1.IndirectArgsOffset = 0;
+
+            Collector.AddMesh(ViewIndex, MeshLOD1);
+        }
     }
 }
 

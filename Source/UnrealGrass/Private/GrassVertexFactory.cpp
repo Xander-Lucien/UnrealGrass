@@ -65,6 +65,7 @@ void FGrassVertexFactoryShaderParameters::Bind(const FShaderParameterMap& Parame
     GrassData0Buffer.Bind(ParameterMap, TEXT("GrassData0"));
     GrassData1Buffer.Bind(ParameterMap, TEXT("GrassData1"));
     GrassData2Buffer.Bind(ParameterMap, TEXT("GrassData2"));
+    GrassLODLevel.Bind(ParameterMap, TEXT("GrassLODLevel"));
 }
 
 void FGrassVertexFactoryShaderParameters::GetElementShaderBindings(
@@ -116,6 +117,12 @@ void FGrassVertexFactoryShaderParameters::GetElementShaderBindings(
         {
             ShaderBindings.Add(GrassData2Buffer, SRV);
         }
+    }
+    
+    // 传递 LOD 级别参数到 Shader
+    if (GrassLODLevel.IsBound())
+    {
+        ShaderBindings.Add(GrassLODLevel, GrassVF->GetLODLevel());
     }
 }
 

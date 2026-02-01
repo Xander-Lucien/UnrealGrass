@@ -318,11 +318,12 @@ void UGrassComponent::GenerateGrass()
                 UE_LOG(LogTemp, Log, TEXT("Created Visible Buffers for GPU Culling (initialized with all %d instances)"), Total);
             }
 
-            // ========== 创建 Indirect Draw Args Buffer ==========
+            // ========== 创建 Indirect Draw Args Buffer (LOD 0 - 15 顶点, 39 索引) ==========
             if (CapturedUseIndirectDraw)
             {
                 const uint32 IndirectArgsSize = 5 * sizeof(uint32);
                 
+                // LOD 0 IndirectArgsBuffer
                 FRHIBufferCreateDesc IndirectDesc = FRHIBufferCreateDesc::Create(
                     TEXT("GrassIndirectArgsBuffer"),
                     IndirectArgsSize,
@@ -337,7 +338,7 @@ void UGrassComponent::GenerateGrass()
                     .SetType(FRHIViewDesc::EBufferType::Raw);
                 IndirectArgsBufferUAV = RHICmdList.CreateUnorderedAccessView(IndirectArgsBuffer, IndirectUAVDesc);
                 
-                // 初始化 Indirect Args
+                // 初始化 Indirect Args for LOD 0
                 RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBuffer, ERHIAccess::IndirectArgs, ERHIAccess::CopyDest));
                 uint32* IndirectArgs = (uint32*)RHICmdList.LockBuffer(IndirectArgsBuffer, 0, IndirectArgsSize, RLM_WriteOnly);
                 IndirectArgs[0] = 39;    // IndexCountPerInstance (15 vertices, 13 triangles = 39 indices)
@@ -348,7 +349,110 @@ void UGrassComponent::GenerateGrass()
                 RHICmdList.UnlockBuffer(IndirectArgsBuffer);
                 RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBuffer, ERHIAccess::CopyDest, ERHIAccess::IndirectArgs));
                 
-                UE_LOG(LogTemp, Log, TEXT("Created IndirectArgsBuffer with UAV for GPU Culling"));
+                UE_LOG(LogTemp, Log, TEXT("Created IndirectArgsBuffer (LOD 0) with UAV for GPU Culling"));
+
+                // ========== 创建 LOD 1 的 Indirect Draw Args Buffer (7 顶点, 15 索引) ==========
+                FRHIBufferCreateDesc IndirectDescLOD1 = FRHIBufferCreateDesc::Create(
+                    TEXT("GrassIndirectArgsBufferLOD1"),
+                    IndirectArgsSize,
+                    sizeof(uint32),
+                    EBufferUsageFlags::DrawIndirect | EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource)
+                    .SetInitialState(ERHIAccess::IndirectArgs);
+                
+                IndirectArgsBufferLOD1 = RHICmdList.CreateBuffer(IndirectDescLOD1);
+
+                // 创建 UAV 用于 Culling Shader 写入
+                auto IndirectUAVDescLOD1 = FRHIViewDesc::CreateBufferUAV()
+                    .SetType(FRHIViewDesc::EBufferType::Raw);
+                IndirectArgsBufferLOD1UAV = RHICmdList.CreateUnorderedAccessView(IndirectArgsBufferLOD1, IndirectUAVDescLOD1);
+                
+                // 初始化 Indirect Args for LOD 1
+                RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBufferLOD1, ERHIAccess::IndirectArgs, ERHIAccess::CopyDest));
+                uint32* IndirectArgsLOD1 = (uint32*)RHICmdList.LockBuffer(IndirectArgsBufferLOD1, 0, IndirectArgsSize, RLM_WriteOnly);
+                IndirectArgsLOD1[0] = 15;    // IndexCountPerInstance (7 vertices, 5 triangles = 15 indices)
+                IndirectArgsLOD1[1] = 0;     // InstanceCount (starts at 0, filled by culling shader)
+                IndirectArgsLOD1[2] = 0;     // StartIndexLocation
+                IndirectArgsLOD1[3] = 0;     // BaseVertexLocation
+                IndirectArgsLOD1[4] = 0;     // StartInstanceLocation (LOD 1 从 index 0 开始)
+                RHICmdList.UnlockBuffer(IndirectArgsBufferLOD1);
+                RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBufferLOD1, ERHIAccess::CopyDest, ERHIAccess::IndirectArgs));
+                
+                UE_LOG(LogTemp, Log, TEXT("Created IndirectArgsBufferLOD1 with UAV for GPU Culling"));
+
+                // ========== 创建 LOD 1 的独立 Visible Buffers ==========
+                // LOD 1 使用独立的 buffer，从 index 0 开始存储，避免与 LOD 0 冲突
+                
+                // VisiblePositionBufferLOD1
+                {
+                    FRHIBufferCreateDesc VisibleDescLOD1 = FRHIBufferCreateDesc::CreateStructured(
+                        TEXT("GrassVisiblePositionBufferLOD1"),
+                        Total * sizeof(FVector3f),
+                        sizeof(FVector3f))
+                        .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource)
+                        .SetInitialState(ERHIAccess::SRVMask);
+
+                    VisiblePositionBufferLOD1 = RHICmdList.CreateBuffer(VisibleDescLOD1);
+
+                    auto VisibleLOD1UAVDesc = FRHIViewDesc::CreateBufferUAV()
+                        .SetType(FRHIViewDesc::EBufferType::Structured)
+                        .SetNumElements(Total);
+                    VisiblePositionBufferLOD1UAV = RHICmdList.CreateUnorderedAccessView(VisiblePositionBufferLOD1, VisibleLOD1UAVDesc);
+
+                    auto VisibleLOD1SRVDesc = FRHIViewDesc::CreateBufferSRV()
+                        .SetType(FRHIViewDesc::EBufferType::Structured)
+                        .SetNumElements(Total);
+                    VisiblePositionBufferLOD1SRV = RHICmdList.CreateShaderResourceView(VisiblePositionBufferLOD1, VisibleLOD1SRVDesc);
+                }
+
+                // VisibleGrassData0BufferLOD1
+                {
+                    FRHIBufferCreateDesc VisibleData0DescLOD1 = FRHIBufferCreateDesc::CreateStructured(
+                        TEXT("GrassVisibleData0BufferLOD1"),
+                        Total * sizeof(FVector4f),
+                        sizeof(FVector4f))
+                        .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource)
+                        .SetInitialState(ERHIAccess::SRVMask);
+                    VisibleGrassData0BufferLOD1 = RHICmdList.CreateBuffer(VisibleData0DescLOD1);
+                    
+                    auto VisibleData0LOD1UAVDesc = FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+                    VisibleGrassData0BufferLOD1UAV = RHICmdList.CreateUnorderedAccessView(VisibleGrassData0BufferLOD1, VisibleData0LOD1UAVDesc);
+                    auto VisibleData0LOD1SRVDesc = FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+                    VisibleGrassData0BufferLOD1SRV = RHICmdList.CreateShaderResourceView(VisibleGrassData0BufferLOD1, VisibleData0LOD1SRVDesc);
+                }
+                
+                // VisibleGrassData1BufferLOD1
+                {
+                    FRHIBufferCreateDesc VisibleData1DescLOD1 = FRHIBufferCreateDesc::CreateStructured(
+                        TEXT("GrassVisibleData1BufferLOD1"),
+                        Total * sizeof(FVector4f),
+                        sizeof(FVector4f))
+                        .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource)
+                        .SetInitialState(ERHIAccess::SRVMask);
+                    VisibleGrassData1BufferLOD1 = RHICmdList.CreateBuffer(VisibleData1DescLOD1);
+                    
+                    auto VisibleData1LOD1UAVDesc = FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+                    VisibleGrassData1BufferLOD1UAV = RHICmdList.CreateUnorderedAccessView(VisibleGrassData1BufferLOD1, VisibleData1LOD1UAVDesc);
+                    auto VisibleData1LOD1SRVDesc = FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+                    VisibleGrassData1BufferLOD1SRV = RHICmdList.CreateShaderResourceView(VisibleGrassData1BufferLOD1, VisibleData1LOD1SRVDesc);
+                }
+                
+                // VisibleGrassData2BufferLOD1
+                {
+                    FRHIBufferCreateDesc VisibleData2DescLOD1 = FRHIBufferCreateDesc::CreateStructured(
+                        TEXT("GrassVisibleData2BufferLOD1"),
+                        Total * sizeof(float),
+                        sizeof(float))
+                        .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource)
+                        .SetInitialState(ERHIAccess::SRVMask);
+                    VisibleGrassData2BufferLOD1 = RHICmdList.CreateBuffer(VisibleData2DescLOD1);
+                    
+                    auto VisibleData2LOD1UAVDesc = FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+                    VisibleGrassData2BufferLOD1UAV = RHICmdList.CreateUnorderedAccessView(VisibleGrassData2BufferLOD1, VisibleData2LOD1UAVDesc);
+                    auto VisibleData2LOD1SRVDesc = FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
+                    VisibleGrassData2BufferLOD1SRV = RHICmdList.CreateShaderResourceView(VisibleGrassData2BufferLOD1, VisibleData2LOD1SRVDesc);
+                }
+
+                UE_LOG(LogTemp, Log, TEXT("Created LOD 1 independent Visible Buffers"));
             }
         }
     );

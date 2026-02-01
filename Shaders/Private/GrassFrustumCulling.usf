@@ -1,5 +1,5 @@
 // GrassFrustumCulling.usf
-// GPU Frustum Culling Compute Shader
+// GPU Frustum Culling Compute Shader with LOD Support
 
 #include "/Engine/Private/Common.ush"
 
@@ -17,20 +17,29 @@ StructuredBuffer<float4> InGrassData1;
 // Input: Grass blade data (P2Offset)
 StructuredBuffer<float> InGrassData2;
 
-// Output: Visible instance positions
+// Output: Visible instance positions (LOD 0)
 RWStructuredBuffer<float3> OutVisiblePositions;
-
-// Output: Visible grass blade data (同步复制)
+// Output: Visible grass blade data (LOD 0)
 RWStructuredBuffer<float4> OutVisibleGrassData0;
 RWStructuredBuffer<float4> OutVisibleGrassData1;
 RWStructuredBuffer<float> OutVisibleGrassData2;
 
-// Indirect Draw Args Buffer
+// Output: Visible instance positions (LOD 1 独立 Buffer)
+RWStructuredBuffer<float3> OutVisiblePositionsLOD1;
+// Output: Visible grass blade data (LOD 1 独立 Buffer)
+RWStructuredBuffer<float4> OutVisibleGrassData0LOD1;
+RWStructuredBuffer<float4> OutVisibleGrassData1LOD1;
+RWStructuredBuffer<float> OutVisibleGrassData2LOD1;
+
+// Indirect Draw Args Buffer (LOD 0)
 RWBuffer<uint> OutIndirectArgs;
+// Indirect Draw Args Buffer (LOD 1)
+RWBuffer<uint> OutIndirectArgsLOD1;
 
 // Scalar parameters
 uint TotalInstanceCount;
-uint IndexCountPerInstance;
+uint IndexCountPerInstance;      // LOD 0 索引数量 (39 for 15 vertices)
+uint IndexCountPerInstanceLOD1;  // LOD 1 索引数量 (15 for 7 vertices)
 
 // Frustum planes (6 planes: Left, Right, Bottom, Top, Near, Far)
 float4 FrustumPlanes[6];
@@ -41,10 +50,11 @@ float4x4 LocalToWorld;
 // Culling parameters
 float BoundingRadius;
 float MaxVisibleDistance;
+float LOD0Distance;       // LOD 0 到 LOD 1 的切换距离
 float3 CameraPosition;
 
 // ============================================================================
-// Main Culling Compute Shader
+// Main Culling Compute Shader with LOD
 // ============================================================================
 
 [numthreads(64, 1, 1)]
@@ -65,6 +75,10 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     float4 WorldPos4 = mul(float4(LocalPosition, 1.0f), LocalToWorld);
     float3 WorldPos = WorldPos4.xyz;
     
+    // Calculate distance to camera
+    float3 Delta = WorldPos - CameraPosition;
+    float DistSq = dot(Delta, Delta);
+    
     // Perform frustum culling - check if point is inside frustum
     bool bVisible = true;
     
@@ -84,37 +98,58 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     // Perform distance culling
     if (bVisible && MaxVisibleDistance > 0.0f)
     {
-        float3 Delta = WorldPos - CameraPosition;
-        float DistSq = dot(Delta, Delta);
         float MaxDistSq = MaxVisibleDistance * MaxVisibleDistance;
         bVisible = (DistSq <= MaxDistSq);
     }
     
-    // If visible, write position AND grass data to output buffers
+    // If visible, determine LOD level and write to appropriate buffer
     if (bVisible)
     {
-        // Use atomic operation to get output index
-        uint VisibleIndex = 0;
-        InterlockedAdd(OutIndirectArgs[1], 1, VisibleIndex);
+        // Determine LOD level based on distance
+        float LOD0DistSq = LOD0Distance * LOD0Distance;
+        bool bUseLOD0 = (LOD0Distance <= 0.0f) || (DistSq <= LOD0DistSq);
         
-        // Write visible instance position
-        OutVisiblePositions[VisibleIndex] = LocalPosition;
-        
-        // Write visible instance grass data (同步复制属性数据)
-        OutVisibleGrassData0[VisibleIndex] = InGrassData0[InstanceIndex];
-        OutVisibleGrassData1[VisibleIndex] = InGrassData1[InstanceIndex];
-        OutVisibleGrassData2[VisibleIndex] = InGrassData2[InstanceIndex];
+        if (bUseLOD0)
+        {
+            // LOD 0: High quality (15 vertices)
+            // Use atomic operation to get output index for LOD 0
+            uint VisibleIndex = 0;
+            InterlockedAdd(OutIndirectArgs[1], 1, VisibleIndex);
+            
+            // Write visible instance position (LOD 0 buffer)
+            OutVisiblePositions[VisibleIndex] = LocalPosition;
+            
+            // Write visible instance grass data (LOD 0 buffers)
+            OutVisibleGrassData0[VisibleIndex] = InGrassData0[InstanceIndex];
+            OutVisibleGrassData1[VisibleIndex] = InGrassData1[InstanceIndex];
+            OutVisibleGrassData2[VisibleIndex] = InGrassData2[InstanceIndex];
+        }
+        else
+        {
+            // LOD 1: Simplified (7 vertices)
+            // Use atomic operation to get output index for LOD 1
+            uint LOD1Index = 0;
+            InterlockedAdd(OutIndirectArgsLOD1[1], 1, LOD1Index);
+            
+            // Write visible instance position to LOD 1 独立 buffer (从 index 0 开始)
+            OutVisiblePositionsLOD1[LOD1Index] = LocalPosition;
+            
+            // Write visible instance grass data to LOD 1 独立 buffers
+            OutVisibleGrassData0LOD1[LOD1Index] = InGrassData0[InstanceIndex];
+            OutVisibleGrassData1LOD1[LOD1Index] = InGrassData1[InstanceIndex];
+            OutVisibleGrassData2LOD1[LOD1Index] = InGrassData2[InstanceIndex];
+        }
     }
 }
 
 // ============================================================================
-// Reset Indirect Args Compute Shader
+// Reset Indirect Args Compute Shader (for both LOD 0 and LOD 1)
 // ============================================================================
 
 [numthreads(1, 1, 1)]
 void ResetIndirectArgsCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
-    // Reset Indirect Draw args
+    // Reset Indirect Draw args for LOD 0
     // [0] = IndexCountPerInstance
     // [1] = InstanceCount (will be incremented by MainCS)
     // [2] = StartIndexLocation
@@ -125,4 +160,12 @@ void ResetIndirectArgsCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     OutIndirectArgs[2] = 0;
     OutIndirectArgs[3] = 0;
     OutIndirectArgs[4] = 0;
+    
+    // Reset Indirect Draw args for LOD 1
+    // LOD 1 使用独立的 buffer，StartInstanceLocation = 0
+    OutIndirectArgsLOD1[0] = IndexCountPerInstanceLOD1;
+    OutIndirectArgsLOD1[1] = 0;
+    OutIndirectArgsLOD1[2] = 0;
+    OutIndirectArgsLOD1[3] = 0;
+    OutIndirectArgsLOD1[4] = 0;  // LOD 1 从 index 0 开始
 }
