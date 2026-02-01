@@ -1,0 +1,109 @@
+// GrassFrustumCulling.usf
+// GPU Frustum Culling Compute Shader
+
+#include "/Engine/Private/Common.ush"
+
+// ============================================================================
+// Shader Parameters (bound from C++ SHADER_PARAMETER_STRUCT)
+// ============================================================================
+
+// Input: All instance positions
+StructuredBuffer<float3> InPositions;
+
+// Output: Visible instance positions
+RWStructuredBuffer<float3> OutVisiblePositions;
+
+// Indirect Draw Args Buffer
+RWBuffer<uint> OutIndirectArgs;
+
+// Scalar parameters
+uint TotalInstanceCount;
+uint IndexCountPerInstance;
+
+// Frustum planes (6 planes: Left, Right, Bottom, Top, Near, Far)
+float4 FrustumPlanes[6];
+
+// Transform matrix
+float4x4 LocalToWorld;
+
+// Culling parameters
+float BoundingRadius;
+float MaxVisibleDistance;
+float3 CameraPosition;
+
+// ============================================================================
+// Main Culling Compute Shader
+// ============================================================================
+
+[numthreads(64, 1, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    uint InstanceIndex = DispatchThreadId.x;
+    
+    // Bounds check
+    if (InstanceIndex >= TotalInstanceCount)
+    {
+        return;
+    }
+    
+    // Get instance local position
+    float3 LocalPosition = InPositions[InstanceIndex];
+    
+    // Transform to world space
+    float4 WorldPos4 = mul(float4(LocalPosition, 1.0f), LocalToWorld);
+    float3 WorldPos = WorldPos4.xyz;
+    
+    // Perform frustum culling - check if point is inside frustum
+    bool bVisible = true;
+    
+    // Check against each frustum plane
+    [unroll]
+    for (int PlaneIndex = 0; PlaneIndex < 6; PlaneIndex++)
+    {
+        float PlaneDistance = dot(FrustumPlanes[PlaneIndex].xyz, WorldPos) + FrustumPlanes[PlaneIndex].w;
+
+        if (PlaneDistance < -BoundingRadius)
+        {
+            bVisible = false;
+            break;
+        }
+    }
+    
+    // Perform distance culling
+    if (bVisible && MaxVisibleDistance > 0.0f)
+    {
+        float3 Delta = WorldPos - CameraPosition;
+        float DistSq = dot(Delta, Delta);
+        float MaxDistSq = MaxVisibleDistance * MaxVisibleDistance;
+        bVisible = (DistSq <= MaxDistSq);
+    }
+    
+    // If visible, write position to output buffer
+    if (bVisible)
+    {
+        // Use atomic operation to get output index and write visible instance position
+        uint VisibleIndex = 0;
+        InterlockedAdd(OutIndirectArgs[1], 1, VisibleIndex);
+        OutVisiblePositions[VisibleIndex] = LocalPosition;
+    }
+}
+
+// ============================================================================
+// Reset Indirect Args Compute Shader
+// ============================================================================
+
+[numthreads(1, 1, 1)]
+void ResetIndirectArgsCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    // Reset Indirect Draw args
+    // [0] = IndexCountPerInstance
+    // [1] = InstanceCount (will be incremented by MainCS)
+    // [2] = StartIndexLocation
+    // [3] = BaseVertexLocation
+    // [4] = StartInstanceLocation
+    OutIndirectArgs[0] = IndexCountPerInstance;
+    OutIndirectArgs[1] = 0;
+    OutIndirectArgs[2] = 0;
+    OutIndirectArgs[3] = 0;
+    OutIndirectArgs[4] = 0;
+}
