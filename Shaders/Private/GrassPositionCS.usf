@@ -1,10 +1,24 @@
 ﻿// GrassPositionCS.usf
-// GPU Grass Position and Instance Data Generation with Clump Buffer
-// 使用预生成的 ClumpBuffer 来查找最近的 Clump
+// GPU Grass Position and Instance Data Generation with Voronoi Texture
+// 使用预生成的 Voronoi Texture 采样获取最近的 Clump (O(1) 复杂度)
+//
+// 算法改进：
+// 旧方案：每个草叶循环遍历所有 Clump 查找最近的 O(N)
+// 新方案：从预计算的 Voronoi Texture 采样，O(1) 复杂度
+//
+// Voronoi Texture 格式 (RGBA float):
+// R = ClumpIndex (归一化 0-1，需乘以 255)
+// G = ClumpCentre.x (0-1)
+// B = ClumpCentre.y (0-1)
+// A = Distance (归一化)
 
 #include "/Engine/Public/Platform.ush"
 
-// 输入 Buffers - Clump 数据
+// 输入 - Voronoi Texture (预计算的 Clump 查找表)
+Texture2D<float4> InVoronoiTexture;
+SamplerState InVoronoiTextureSampler;
+
+// 输入 Buffers - Clump 属性数据
 // ClumpData0: Centre.x, Centre.y, Direction.x, Direction.y
 // ClumpData1: HeightScale, WidthScale, WindPhase, Padding
 StructuredBuffer<float4> InClumpData0;
@@ -62,37 +76,6 @@ float2 Random2D(float2 seed)
 }
 
 // ============================================================================
-// 从 ClumpBuffer 中查找最近的 Clump
-// 返回: x=ClumpIndex, y=ClumpCentre.x, z=ClumpCentre.y, w=Distance
-// ============================================================================
-float4 FindNearestClump(float2 UV, int ClumpCount)
-{
-    float MinDist = 100000.0;
-    int NearestClumpIndex = 0;
-    float2 NearestCentre = float2(0.0, 0.0);
-    
-    int ClumpLimit = min(100, ClumpCount);
-    
-    for (int j = 0; j < ClumpLimit; j++)
-    {
-        // 从 ClumpBuffer 读取 Clump 中心位置
-        float4 ClumpData = InClumpData0[j];
-        float2 ClumpCentre = ClumpData.xy;
-        
-        float D = distance(ClumpCentre, UV);
-        
-        if (D < MinDist)
-        {
-            MinDist = D;
-            NearestClumpIndex = j;
-            NearestCentre = ClumpCentre;
-        }
-    }
-    
-    return float4((float)NearestClumpIndex, NearestCentre.x, NearestCentre.y, MinDist);
-}
-
-// ============================================================================
 // 主函数
 // ============================================================================
 [numthreads(8, 8, 1)]
@@ -118,17 +101,21 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     Position.x += Jitter.x;
     Position.y += Jitter.y;
     
-    // UV for finding nearest clump
+    // UV for Voronoi texture sampling
     float2 UV = float2(
         (Position.x + HalfSize) / (HalfSize * 2.0),
         (Position.y + HalfSize) / (HalfSize * 2.0)
     );
     UV = saturate(UV);
     
-    // 从 ClumpBuffer 查找最近的 Clump
-    float4 ClumpResult = FindNearestClump(UV, NumClumps);
-    int ClumpIndex = (int)ClumpResult.x;
-    float2 ClumpCentre = ClumpResult.yz;
+    // ========== 从 Voronoi Texture 采样获取最近 Clump (O(1) 复杂度！) ==========
+    float4 VoronoiData = InVoronoiTexture.SampleLevel(InVoronoiTextureSampler, UV, 0);
+    
+    // 解析 Voronoi 数据
+    int ClumpIndex = (int)(VoronoiData.r * 255.0 + 0.5); // 从归一化值恢复索引
+    ClumpIndex = clamp(ClumpIndex, 0, NumClumps - 1);    // 确保索引有效
+    float2 ClumpCentre = VoronoiData.gb;                  // 直接从纹理获取 Clump 中心
+    // float VoronoiDistance = VoronoiData.a;             // 距离（如果需要的话）
     
     // 从 ClumpBuffer 读取 Clump 属性
     float4 ClumpData0 = InClumpData0[ClumpIndex]; // Centre.xy, Direction.xy
@@ -188,4 +175,3 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     OutGrassData1[Index] = float4(TaperAmount, FacingDir.x, FacingDir.y, P1Offset);
     OutGrassData2[Index] = P2Offset;
 }
-

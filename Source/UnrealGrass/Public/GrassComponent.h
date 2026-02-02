@@ -154,8 +154,12 @@ float LOD0Distance = 1000.0f;
     FClumpParameters ClumpParameters;
 
     /** 丛簇数量 */
-    UPROPERTY(EditAnywhere, Category = "Grass|Clumping", meta = (ClampMin = "1", ClampMax = "100"))
+    UPROPERTY(EditAnywhere, Category = "Grass|Clumping", meta = (ClampMin = "1", ClampMax = "256"))
     int32 NumClumps = 50;
+
+    /** Voronoi Texture 分辨率（越高精度越高，但内存占用也越大）*/
+    UPROPERTY(EditAnywhere, Category = "Grass|Clumping", meta = (ClampMin = "64", ClampMax = "1024"))
+    int32 VoronoiTextureSize = 256;
 
     /** 丛簇类型数量（用于颜色/属性变化）*/
     UPROPERTY(EditAnywhere, Category = "Grass|Clumping", meta = (ClampMin = "1", ClampMax = "40"))
@@ -263,5 +267,12 @@ float LOD0Distance = 1000.0f;
     FShaderResourceViewRHIRef ClumpBufferSRV;
     FBufferRHIRef ClumpData1Buffer;       // ClumpData1: HeightScale, WidthScale, WindPhase, Padding
     FShaderResourceViewRHIRef ClumpData1BufferSRV;
+
+    // ======== Voronoi Texture 数据 ========
+    // 预计算的 Voronoi 查找纹理，用于 O(1) 复杂度获取最近 Clump
+    // R = ClumpIndex (归一化), G = CentreX, B = CentreY, A = Distance
+    FTextureRHIRef VoronoiTexture;
+    FShaderResourceViewRHIRef VoronoiTextureSRV;
+    FUnorderedAccessViewRHIRef VoronoiTextureUAV;
 };
 

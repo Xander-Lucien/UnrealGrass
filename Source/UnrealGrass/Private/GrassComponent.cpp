@@ -19,6 +19,9 @@ public:
     SHADER_USE_PARAMETER_STRUCT(FGrassPositionCS, FGlobalShader);
 
     BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+        // Voronoi Texture 输入 (用于 O(1) 查找最近 Clump)
+        SHADER_PARAMETER_SRV(Texture2D<float4>, InVoronoiTexture)
+        SHADER_PARAMETER_SAMPLER(SamplerState, InVoronoiTextureSampler)
         // Clump Buffer 输入
         SHADER_PARAMETER_SRV(StructuredBuffer<FVector4f>, InClumpData0) // Centre.xy, Direction.xy
         SHADER_PARAMETER_SRV(StructuredBuffer<FVector4f>, InClumpData1) // HeightScale, WidthScale, WindPhase, Padding
@@ -79,6 +82,30 @@ public:
 IMPLEMENT_GLOBAL_SHADER(FClumpGenerationCS, "/Plugin/UnrealGrass/Private/GrassClumpCS.usf", "MainCS", SF_Compute);
 
 // ============================================================================
+// Compute Shader 定义 - Voronoi Texture 生成
+// ============================================================================
+class FVoronoiGenerationCS : public FGlobalShader
+{
+public:
+    DECLARE_GLOBAL_SHADER(FVoronoiGenerationCS);
+    SHADER_USE_PARAMETER_STRUCT(FVoronoiGenerationCS, FGlobalShader);
+
+    BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+        SHADER_PARAMETER_SRV(StructuredBuffer<float4>, InClumpData0) // Centre.xy, Direction.xy
+        SHADER_PARAMETER_UAV(RWTexture2D<float4>, OutVoronoiTexture)
+        SHADER_PARAMETER(int32, NumClumps)
+        SHADER_PARAMETER(int32, TextureSize)
+    END_SHADER_PARAMETER_STRUCT()
+
+    static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+    {
+        return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+    }
+};
+
+IMPLEMENT_GLOBAL_SHADER(FVoronoiGenerationCS, "/Plugin/UnrealGrass/Private/GrassVoronoiCS.usf", "MainCS", SF_Compute);
+
+// ============================================================================
 // UGrassComponent 实现
 // ============================================================================
 UGrassComponent::UGrassComponent()
@@ -124,6 +151,7 @@ void UGrassComponent::GenerateGrass()
     // Clump 参数
     int32 CapturedNumClumps = NumClumps;
     int32 CapturedNumClumpTypes = NumClumpTypes;
+    int32 CapturedVoronoiTextureSize = VoronoiTextureSize;
     float CapturedPullToCentre = ClumpParameters.PullToCentre;
     float CapturedPointInSameDirection = ClumpParameters.PointInSameDirection;
     float CapturedClumpHeightVariation = ClumpHeightVariation;
@@ -140,13 +168,13 @@ void UGrassComponent::GenerateGrass()
     float CapturedBendRandom = ClumpParameters.BendRandom;
     float CapturedTaperAmount = ClumpParameters.TaperAmount;
 
-    UE_LOG(LogTemp, Log, TEXT("Generating %d grass positions on GPU (FrustumCulling=%d, NumClumps=%d)..."), 
-        InstanceCount, CapturedEnableFrustumCulling ? 1 : 0, CapturedNumClumps);
+    UE_LOG(LogTemp, Log, TEXT("Generating %d grass positions on GPU (FrustumCulling=%d, NumClumps=%d, VoronoiSize=%d)..."), 
+        InstanceCount, CapturedEnableFrustumCulling ? 1 : 0, CapturedNumClumps, CapturedVoronoiTextureSize);
 
     ENQUEUE_RENDER_COMMAND(GenerateGrassPositions)(
         [this, CapturedGridSize, CapturedSpacing, CapturedJitterStrength, 
          CapturedUseIndirectDraw, CapturedEnableFrustumCulling,
-         CapturedNumClumps, CapturedNumClumpTypes, CapturedPullToCentre, CapturedPointInSameDirection,
+         CapturedNumClumps, CapturedNumClumpTypes, CapturedVoronoiTextureSize, CapturedPullToCentre, CapturedPointInSameDirection,
          CapturedClumpHeightVariation, CapturedClumpWidthVariation,
          CapturedBaseHeight, CapturedHeightRandom, CapturedBaseWidth, CapturedWidthRandom,
          CapturedBaseTilt, CapturedTiltRandom, CapturedBaseBend, CapturedBendRandom, CapturedTaperAmount](FRHICommandListImmediate& RHICmdList)
@@ -210,6 +238,47 @@ void UGrassComponent::GenerateGrass()
 
                 UE_LOG(LogTemp, Log, TEXT("Created ClumpBuffer with %d clumps (HeightVar=%.2f, WidthVar=%.2f)"), 
                     CapturedNumClumps, CapturedClumpHeightVariation, CapturedClumpWidthVariation);
+            }
+
+            // ========== 创建 Voronoi Texture (预计算 Clump 查找表) ==========
+            // 使用 Compute Shader 渲染 Voronoi 图到纹理，后续草叶生成时 O(1) 采样
+            {
+                // 创建 Voronoi Texture (RGBA32F 格式)
+                const FRHITextureCreateDesc VoronoiTextureDesc = FRHITextureCreateDesc::Create2D(
+                    TEXT("GrassVoronoiTexture"),
+                    CapturedVoronoiTextureSize,
+                    CapturedVoronoiTextureSize,
+                    PF_A32B32G32R32F)  // 32位浮点精度确保 Clump Index 准确
+                    .SetFlags(ETextureCreateFlags::UAV | ETextureCreateFlags::ShaderResource)
+                    .SetInitialState(ERHIAccess::UAVCompute);
+                
+                VoronoiTexture = RHICmdList.CreateTexture(VoronoiTextureDesc);
+                
+                // 创建 UAV 用于 Voronoi CS 写入 (使用新版 FRHIViewDesc API)
+                VoronoiTextureUAV = RHICmdList.CreateUnorderedAccessView(VoronoiTexture, FRHIViewDesc::CreateTextureUAV().SetDimensionFromTexture(VoronoiTexture));
+                
+                // 执行 Voronoi 生成 Compute Shader
+                TShaderMapRef<FVoronoiGenerationCS> VoronoiCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+                FVoronoiGenerationCS::FParameters VoronoiParams;
+                VoronoiParams.InClumpData0 = ClumpBufferSRV;
+                VoronoiParams.OutVoronoiTexture = VoronoiTextureUAV;
+                VoronoiParams.NumClumps = CapturedNumClumps;
+                VoronoiParams.TextureSize = CapturedVoronoiTextureSize;
+                
+                FComputeShaderUtils::Dispatch(RHICmdList, VoronoiCS, VoronoiParams,
+                    FIntVector(
+                        FMath::DivideAndRoundUp(CapturedVoronoiTextureSize, 8),
+                        FMath::DivideAndRoundUp(CapturedVoronoiTextureSize, 8),
+                        1));
+                
+                // 转换到 SRV 状态供后续采样
+                RHICmdList.Transition(FRHITransitionInfo(VoronoiTexture, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+                
+                // 创建 SRV (使用新版 FRHIViewDesc API)
+                VoronoiTextureSRV = RHICmdList.CreateShaderResourceView(VoronoiTexture, FRHIViewDesc::CreateTextureSRV().SetDimensionFromTexture(VoronoiTexture));
+                
+                UE_LOG(LogTemp, Log, TEXT("Created Voronoi Texture (%dx%d) for O(1) Clump lookup"), 
+                    CapturedVoronoiTextureSize, CapturedVoronoiTextureSize);
             }
 
             // ========== 创建所有实例位置的 StructuredBuffer ==========
@@ -278,6 +347,9 @@ void UGrassComponent::GenerateGrass()
             // ========== 执行位置生成 Compute Shader ==========
             TShaderMapRef<FGrassPositionCS> CS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
             FGrassPositionCS::FParameters Params;
+            // Voronoi Texture 输入 (用于 O(1) 查找最近 Clump)
+            Params.InVoronoiTexture = VoronoiTextureSRV;
+            Params.InVoronoiTextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
             // ClumpBuffer 输入
             Params.InClumpData0 = ClumpBufferSRV;
             Params.InClumpData1 = ClumpData1BufferSRV;

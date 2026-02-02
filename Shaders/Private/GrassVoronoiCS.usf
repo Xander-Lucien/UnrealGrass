@@ -1,0 +1,81 @@
+// GrassVoronoiCS.usf
+// 生成 Voronoi Texture 的 Compute Shader
+// 预计算每个像素最近的 Clump 信息，供草叶生成时 O(1) 采样
+// 
+// 算法思路：
+// 1. 预生成 Clump 中心点到 Buffer
+// 2. 本 Shader 对每个纹理像素遍历所有 Clump 找最近的
+// 3. 将结果存入 RWTexture2D (R=ClumpIndex, G=CentreX, B=CentreY, A=Distance)
+// 4. 草叶生成时直接采样纹理，复杂度 O(1)
+
+#include "/Engine/Public/Platform.ush"
+
+// 输入 - Clump 数据 Buffer
+// ClumpData0: Centre.x, Centre.y, Direction.x, Direction.y
+StructuredBuffer<float4> InClumpData0;
+
+// 输出 - Voronoi Texture
+// R = ClumpIndex (归一化到 0-1)
+// G = ClumpCentre.x (0-1)
+// B = ClumpCentre.y (0-1)
+// A = Distance (归一化)
+RWTexture2D<float4> OutVoronoiTexture;
+
+// 参数
+int NumClumps;
+int TextureSize;
+
+// ============================================================================
+// 主函数 - 每个线程处理一个纹理像素
+// ============================================================================
+[numthreads(8, 8, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    int x = DispatchThreadId.x;
+    int y = DispatchThreadId.y;
+    
+    if (x >= TextureSize || y >= TextureSize)
+        return;
+    
+    // 计算当前像素的 UV 坐标 (0-1)
+    float2 UV = float2(
+        ((float)x + 0.5) / (float)TextureSize,
+        ((float)y + 0.5) / (float)TextureSize
+    );
+    
+    // 遍历所有 Clump 找最近的
+    float MinDist = 100000.0;
+    int NearestClumpIndex = 0;
+    float2 NearestCentre = float2(0.0, 0.0);
+    
+    int ClumpLimit = min(256, NumClumps); // 支持更多 Clump
+    
+    for (int j = 0; j < ClumpLimit; j++)
+    {
+        float4 ClumpData = InClumpData0[j];
+        float2 ClumpCentre = ClumpData.xy;
+        
+        float D = distance(ClumpCentre, UV);
+        
+        if (D < MinDist)
+        {
+            MinDist = D;
+            NearestClumpIndex = j;
+            NearestCentre = ClumpCentre;
+        }
+    }
+    
+    // 写入 Voronoi Texture
+    // 将 ClumpIndex 归一化到 0-1 范围（假设最多 256 个 Clump）
+    float NormalizedIndex = (float)NearestClumpIndex / 255.0;
+    
+    // 距离也归一化（假设最大距离约为 0.707 = sqrt(0.5^2 + 0.5^2)）
+    float NormalizedDist = saturate(MinDist / 0.707);
+    
+    OutVoronoiTexture[uint2(x, y)] = float4(
+        NormalizedIndex,    // R: Clump Index (需要在读取时乘以 255)
+        NearestCentre.x,    // G: Centre.x
+        NearestCentre.y,    // B: Centre.y
+        NormalizedDist      // A: Distance
+    );
+}
