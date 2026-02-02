@@ -130,6 +130,7 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
 , GrassBoundingRadius(Component->GrassBoundingRadius)
 , bEnableLOD(Component->bEnableLOD)  // LOD 参数
 , LOD0Distance(Component->LOD0Distance)
+, CurvedNormalAmount(Component->ClumpParameters.CurvedNormalAmount)  // 弯曲法线参数
 , Material(Component->GrassMaterial)
 {
     bVerifyUsedMaterials = false;
@@ -184,6 +185,8 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
     
     // 设置 LOD 0 的 LOD 级别
     VertexFactory.SetLODLevel(0);
+    // 设置弯曲法线程度
+    VertexFactory.SetCurvedNormalAmount(CurvedNormalAmount);
 
     // 初始化 LOD 1 Mesh 数据 (7 顶点简化版)
     InitLOD1GrassBlade();
@@ -210,6 +213,8 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
     
     // 设置 LOD 1 的 LOD 级别
     VertexFactoryLOD1.SetLODLevel(1);
+    // 设置弯曲法线程度 (LOD 1 使用相同的值)
+    VertexFactoryLOD1.SetCurvedNormalAmount(CurvedNormalAmount);
 
     // 初始化渲染资源 (LOD 0)
     FStaticMeshVertexBuffers* VertexBuffersPtr = &VertexBuffers;
@@ -366,8 +371,6 @@ void FGrassSceneProxy::InitDefaultGrassBlade()
     };
 
     // 13 triangles - CCW winding for front face (normal pointing +Y)
-    // Bottom quad: vertices 1(BL), 2(BR), 0(R1R), 3(R1L)
-    // Then pairs going up: (3,0) -> (4,5) -> (6,7) -> (8,9) -> (10,11) -> (12,13) -> 14
     TArray<uint32> Indices = {
         // Bottom quad (2 triangles) - connecting bottom edge to row 1
         1, 0, 2,    // BL -> R1R -> BR (front face)
@@ -404,26 +407,41 @@ void FGrassSceneProxy::InitDefaultGrassBlade()
 
     for (int32 i = 0; i < NumVertices; i++)
     {
-        // Normal pointing in +Y direction (front facing)
-        FVector3f TangentX(1.0f, 0.0f, 0.0f);
-        FVector3f TangentZ(0.0f, 1.0f, 0.0f);  // Normal
+        // 计算草叶的切线空间
+        // 法线指向 +Y 方向（正面朝向）- 这是初始状态，会在 Shader 中根据变形重新计算
+        // TangentX = 宽度方向 (+X)
+        // TangentY = 法线方向 (+Y) - 由 TangentX x TangentZ 计算得出
+        // TangentZ = 高度方向 (+Z) - 但我们需要法线，所以这里存储法线
+        FVector3f TangentX(1.0f, 0.0f, 0.0f);  // 沿宽度方向 (U)
+        FVector3f TangentZ(0.0f, 1.0f, 0.0f);  // 法线方向 (草叶正面朝Y)
         FVector3f TangentY = FVector3f::CrossProduct(TangentZ, TangentX);
         
         VertexBuffers.StaticMeshVertexBuffer.SetVertexTangents(i, TangentX, TangentY, TangentZ);
         
-        // UV: U = normalized X position (0-1), V = 1 - normalized height (1 at bottom, 0 at top)
+        // UV: U = normalized X position (0 at left edge, 1 at right edge)
+        //     V = normalized height (0 at bottom, 1 at top)
+        // 这样材质可以根据 V 来做高度渐变效果
         float U = (Positions[i].X + MaxWidth) / (2.0f * MaxWidth);
-        float V = 1.0f - (Positions[i].Z / MaxHeight);
+        float V = Positions[i].Z / MaxHeight;
         VertexBuffers.StaticMeshVertexBuffer.SetVertexUV(i, 0, FVector2f(FMath::Clamp(U, 0.0f, 1.0f), FMath::Clamp(V, 0.0f, 1.0f)));
     }
 
     VertexBuffers.ColorVertexBuffer.Init(NumVertices);
     for (int32 i = 0; i < NumVertices; i++)
     {
-        // Store normalized height in alpha channel for wind animation
+        // 顶点颜色存储草叶信息:
+        // R = 归一化高度 (0 = 根部, 1 = 顶部) - 用于风动画和渐变
+        // G = 左右侧标识 (0 = 左侧, 1 = 右侧) - 用于某些效果
+        // B = 1 (保留)
+        // A = 1 (保留)
         float HeightRatio = Positions[i].Z / MaxHeight;
-        uint8 HeightByte = static_cast<uint8>(FMath::Clamp(HeightRatio * 255.0f, 0.0f, 255.0f));
-        VertexBuffers.ColorVertexBuffer.VertexColor(i) = FColor(255, 255, 255, HeightByte);
+        float SideRatio = (Positions[i].X + MaxWidth) / (2.0f * MaxWidth);  // 0 = left, 1 = right
+        
+        uint8 R = static_cast<uint8>(FMath::Clamp(HeightRatio * 255.0f, 0.0f, 255.0f));
+        uint8 G = static_cast<uint8>(FMath::Clamp(SideRatio * 255.0f, 0.0f, 255.0f));
+        uint8 B = 255;
+        uint8 A = 255;
+        VertexBuffers.ColorVertexBuffer.VertexColor(i) = FColor(R, G, B, A);
     }
 
     IndexBuffer.SetIndices(Indices, EIndexBufferStride::Force32Bit);
@@ -475,26 +493,31 @@ void FGrassSceneProxy::InitLOD1GrassBlade()
 
     for (int32 i = 0; i < NumVerticesLOD1; i++)
     {
-        // Normal pointing in +Y direction (front facing)
+        // 切线空间设置 - 与 LOD 0 相同
         FVector3f TangentX(1.0f, 0.0f, 0.0f);
-        FVector3f TangentZ(0.0f, 1.0f, 0.0f);  // Normal
+        FVector3f TangentZ(0.0f, 1.0f, 0.0f);
         FVector3f TangentY = FVector3f::CrossProduct(TangentZ, TangentX);
         
         VertexBuffersLOD1.StaticMeshVertexBuffer.SetVertexTangents(i, TangentX, TangentY, TangentZ);
         
-        // UV: U = normalized X position (0-1), V = 1 - normalized height (1 at bottom, 0 at top)
+        // UV: U = normalized X position, V = normalized height
         float U = (Positions[i].X + MaxWidth) / (2.0f * MaxWidth);
-        float V = 1.0f - (Positions[i].Z / MaxHeight);
+        float V = Positions[i].Z / MaxHeight;
         VertexBuffersLOD1.StaticMeshVertexBuffer.SetVertexUV(i, 0, FVector2f(FMath::Clamp(U, 0.0f, 1.0f), FMath::Clamp(V, 0.0f, 1.0f)));
     }
 
     VertexBuffersLOD1.ColorVertexBuffer.Init(NumVerticesLOD1);
     for (int32 i = 0; i < NumVerticesLOD1; i++)
     {
-        // Store normalized height in alpha channel for wind animation
+        // 顶点颜色与 LOD 0 相同格式
         float HeightRatio = Positions[i].Z / MaxHeight;
-        uint8 HeightByte = static_cast<uint8>(FMath::Clamp(HeightRatio * 255.0f, 0.0f, 255.0f));
-        VertexBuffersLOD1.ColorVertexBuffer.VertexColor(i) = FColor(255, 255, 255, HeightByte);
+        float SideRatio = (Positions[i].X + MaxWidth) / (2.0f * MaxWidth);
+        
+        uint8 R = static_cast<uint8>(FMath::Clamp(HeightRatio * 255.0f, 0.0f, 255.0f));
+        uint8 G = static_cast<uint8>(FMath::Clamp(SideRatio * 255.0f, 0.0f, 255.0f));
+        uint8 B = 255;
+        uint8 A = 255;
+        VertexBuffersLOD1.ColorVertexBuffer.VertexColor(i) = FColor(R, G, B, A);
     }
 
     IndexBufferLOD1.SetIndices(Indices, EIndexBufferStride::Force32Bit);

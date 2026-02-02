@@ -29,6 +29,10 @@ public:
     void SetLODLevel(uint32 InLODLevel) { LODLevel = InLODLevel; }
     uint32 GetLODLevel() const { return LODLevel; }
 
+    // 设置弯曲法线程度
+    void SetCurvedNormalAmount(float InAmount) { CurvedNormalAmount = InAmount; }
+    float GetCurvedNormalAmount() const { return CurvedNormalAmount; }
+
     FRHIShaderResourceView* GetInstancePositionSRV() const { return InstancePositionSRV; }
     FRHIShaderResourceView* GetGrassData0SRV() const { return GrassData0SRV; }
     FRHIShaderResourceView* GetGrassData1SRV() const { return GrassData1SRV; }
@@ -45,6 +49,7 @@ private:
     FRHIShaderResourceView* GrassData2SRV = nullptr;  // P2Offset
     uint32 NumInstances = 0;
     uint32 LODLevel = 0;  // LOD 级别: 0 = LOD0 高质量, 1 = LOD1 简化版
+    float CurvedNormalAmount = 0.5f;  // 弯曲法线程度
 };
 
 /**
@@ -74,4 +79,5 @@ public:
     LAYOUT_FIELD(FShaderResourceParameter, GrassData1Buffer);  // TaperAmount, FacingDir.x, FacingDir.y, P1Offset
     LAYOUT_FIELD(FShaderResourceParameter, GrassData2Buffer);  // P2Offset
     LAYOUT_FIELD(FShaderParameter, GrassLODLevel);  // LOD 级别参数
+    LAYOUT_FIELD(FShaderParameter, GrassCurvedNormalAmount);  // 弯曲法线程度参数
 };

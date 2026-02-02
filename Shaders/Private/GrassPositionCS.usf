@@ -1,7 +1,14 @@
 ﻿// GrassPositionCS.usf
-// GPU Grass Position and Instance Data Generation with Voronoi Clump Distribution
+// GPU Grass Position and Instance Data Generation with Clump Buffer
+// 使用预生成的 ClumpBuffer 来查找最近的 Clump
 
 #include "/Engine/Public/Platform.ush"
+
+// 输入 Buffers - Clump 数据
+// ClumpData0: Centre.x, Centre.y, Direction.x, Direction.y
+// ClumpData1: HeightScale, WidthScale, WindPhase, Padding
+StructuredBuffer<float4> InClumpData0;
+StructuredBuffer<float4> InClumpData1;
 
 // Output buffers
 RWStructuredBuffer<float3> OutPositions;
@@ -31,6 +38,9 @@ float BaseBend;
 float BendRandom;
 float TaperAmount;
 
+// ============================================================================
+// 哈希函数
+// ============================================================================
 float Hash(float2 p)
 {
     return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
@@ -51,31 +61,40 @@ float2 Random2D(float2 seed)
     );
 }
 
-float4 GetVoronoi(float2 UV, int ClumpCount, int ClumpTypeCount)
+// ============================================================================
+// 从 ClumpBuffer 中查找最近的 Clump
+// 返回: x=ClumpIndex, y=ClumpCentre.x, z=ClumpCentre.y, w=Distance
+// ============================================================================
+float4 FindNearestClump(float2 UV, int ClumpCount)
 {
     float MinDist = 100000.0;
-    float Id = 0.0;
-    float2 ClumpCentre = float2(0.0, 0.0);
+    int NearestClumpIndex = 0;
+    float2 NearestCentre = float2(0.0, 0.0);
     
     int ClumpLimit = min(100, ClumpCount);
     
-    for (int j = 1; j < ClumpLimit; j++)
+    for (int j = 0; j < ClumpLimit; j++)
     {
-        float2 JJ = float2((float)j, (float)j);
-        float2 P = Hash22(JJ);
-        float D = distance(P, UV);
+        // 从 ClumpBuffer 读取 Clump 中心位置
+        float4 ClumpData = InClumpData0[j];
+        float2 ClumpCentre = ClumpData.xy;
+        
+        float D = distance(ClumpCentre, UV);
         
         if (D < MinDist)
         {
             MinDist = D;
-            Id = fmod((float)j, (float)ClumpTypeCount);
-            ClumpCentre = P;
+            NearestClumpIndex = j;
+            NearestCentre = ClumpCentre;
         }
     }
     
-    return float4(Id, ClumpCentre.x, ClumpCentre.y, MinDist);
+    return float4((float)NearestClumpIndex, NearestCentre.x, NearestCentre.y, MinDist);
 }
 
+// ============================================================================
+// 主函数
+// ============================================================================
 [numthreads(8, 8, 1)]
 void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
@@ -99,17 +118,26 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     Position.x += Jitter.x;
     Position.y += Jitter.y;
     
-    // UV for Voronoi
+    // UV for finding nearest clump
     float2 UV = float2(
         (Position.x + HalfSize) / (HalfSize * 2.0),
         (Position.y + HalfSize) / (HalfSize * 2.0)
     );
     UV = saturate(UV);
     
-    // Get Voronoi data
-    float4 VoronoiData = GetVoronoi(UV, NumClumps, NumClumpTypes);
-    float ClumpId = VoronoiData.x;
-    float2 ClumpCentre = VoronoiData.yz;
+    // 从 ClumpBuffer 查找最近的 Clump
+    float4 ClumpResult = FindNearestClump(UV, NumClumps);
+    int ClumpIndex = (int)ClumpResult.x;
+    float2 ClumpCentre = ClumpResult.yz;
+    
+    // 从 ClumpBuffer 读取 Clump 属性
+    float4 ClumpData0 = InClumpData0[ClumpIndex]; // Centre.xy, Direction.xy
+    float4 ClumpData1 = InClumpData1[ClumpIndex]; // HeightScale, WidthScale, WindPhase, Padding
+    
+    float2 ClumpDirection = ClumpData0.zw;
+    float ClumpHeightScale = ClumpData1.x;
+    float ClumpWidthScale = ClumpData1.y;
+    // float ClumpWindPhase = ClumpData1.z; // 未来可用于风动画
     
     // World space clump center
     float2 ClumpCentreWorld = float2(
@@ -129,8 +157,9 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     float2 Seed4 = float2(x * 0.4 + 5.2, y * 0.4 + 6.8);
     
     // Grass blade properties with randomization
-    float Height = BaseHeight + (Hash(Seed1) * 2.0 - 1.0) * HeightRandom;
-    float Width = BaseWidth + (Hash(Seed2) * 2.0 - 1.0) * WidthRandom;
+    // 应用 Clump 级别的缩放
+    float Height = (BaseHeight + (Hash(Seed1) * 2.0 - 1.0) * HeightRandom) * ClumpHeightScale;
+    float Width = (BaseWidth + (Hash(Seed2) * 2.0 - 1.0) * WidthRandom) * ClumpWidthScale;
     float Tilt = BaseTilt + (Hash(Seed3) * 2.0 - 1.0) * TiltRandom;
     float Bend = BaseBend + (Hash(Seed4) * 2.0 - 1.0) * BendRandom;
     
@@ -140,16 +169,12 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     Tilt = saturate(Tilt);
     Bend = saturate(Bend);
     
-    // Facing direction - mix individual random with clump direction
-    float2 ClumpDir = Random2D(float2(ClumpId * 100.0, ClumpId * 50.0));
-    float ClumpDirLen = length(ClumpDir);
-    if (ClumpDirLen > 0.001) ClumpDir = ClumpDir / ClumpDirLen;
-    
+    // Facing direction - 使用 ClumpBuffer 中预计算的 Clump 朝向
     float2 IndividualDir = Random2D(float2(x * 0.15, y * 0.15));
     float IndividualDirLen = length(IndividualDir);
     if (IndividualDirLen > 0.001) IndividualDir = IndividualDir / IndividualDirLen;
     
-    float2 FacingDir = lerp(IndividualDir, ClumpDir, PointInSameDirection);
+    float2 FacingDir = lerp(IndividualDir, ClumpDirection, PointInSameDirection);
     float FacingDirLen = length(FacingDir);
     if (FacingDirLen > 0.001) FacingDir = FacingDir / FacingDirLen;
     

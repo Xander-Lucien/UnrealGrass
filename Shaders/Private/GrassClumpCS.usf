@@ -1,0 +1,87 @@
+// GrassClumpCS.usf
+// GPU Clump (草丛簇) 数据生成 Compute Shader
+// 在初始化时执行一次，生成所有 Clump 的属性数据
+
+#include "/Engine/Public/Platform.ush"
+
+// 输出 Buffers
+// ClumpData0: Centre.x, Centre.y, Direction.x, Direction.y
+// ClumpData1: HeightScale, WidthScale, WindPhase, Padding
+RWStructuredBuffer<float4> OutClumpData0;
+RWStructuredBuffer<float4> OutClumpData1;
+
+// 参数
+int NumClumps;
+float HeightVariation;  // 高度变化范围 (0-1)
+float WidthVariation;   // 宽度变化范围 (0-1)
+
+// ============================================================================
+// 哈希函数
+// ============================================================================
+float Hash(float2 p)
+{
+    return frac(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
+}
+
+float2 Hash22(float2 p)
+{
+    float3 a = frac(float3(p.x, p.y, p.x) * float3(123.34, 234.34, 345.65));
+    a += dot(a, a + 34.45);
+    return frac(float2(a.x * a.y, a.y * a.z));
+}
+
+float2 Random2D(float2 seed)
+{
+    return float2(
+        Hash(seed) * 2.0 - 1.0,
+        Hash(seed + float2(1.0, 0.0)) * 2.0 - 1.0
+    );
+}
+
+// ============================================================================
+// 主函数 - 每个线程处理一个 Clump
+// ============================================================================
+[numthreads(64, 1, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    int ClumpIndex = DispatchThreadId.x;
+    
+    if (ClumpIndex >= NumClumps)
+        return;
+    
+    // 使用 ClumpIndex 作为种子生成确定性的随机数据
+    float2 Seed = float2((float)ClumpIndex, (float)ClumpIndex);
+    
+    // ========== 生成 Clump 中心位置 (UV 空间 0-1) ==========
+    // 使用与 GrassPositionCS 相同的 Hash22 函数，确保一致性
+    float2 Centre = Hash22(Seed + float2(1.0, 1.0));
+    
+    // ========== 生成 Clump 朝向 (归一化) ==========
+    float2 Direction = Random2D(float2(ClumpIndex * 100.0, ClumpIndex * 50.0));
+    float DirLen = length(Direction);
+    if (DirLen > 0.001)
+    {
+        Direction = Direction / DirLen;
+    }
+    else
+    {
+        Direction = float2(1.0, 0.0); // 默认朝向 X 正方向
+    }
+    
+    // ========== 生成 Clump 属性 ==========
+    // HeightScale: 1.0 为基准，根据 HeightVariation 上下浮动
+    // 例如 HeightVariation = 0.3 时，HeightScale 范围为 [0.7, 1.3]
+    float HeightRandom = Hash(Seed + float2(10.0, 20.0)) * 2.0 - 1.0; // [-1, 1]
+    float HeightScale = 1.0 + HeightRandom * HeightVariation;
+    
+    // WidthScale: 同理
+    float WidthRandom = Hash(Seed + float2(30.0, 40.0)) * 2.0 - 1.0;
+    float WidthScale = 1.0 + WidthRandom * WidthVariation;
+    
+    // WindPhase: 风动画相位偏移，范围 [0, 2*PI]
+    float WindPhase = Hash(Seed + float2(50.0, 60.0)) * 6.28318530718; // 2*PI
+    
+    // ========== 写入输出 ==========
+    OutClumpData0[ClumpIndex] = float4(Centre.x, Centre.y, Direction.x, Direction.y);
+    OutClumpData1[ClumpIndex] = float4(HeightScale, WidthScale, WindPhase, 0.0);
+}

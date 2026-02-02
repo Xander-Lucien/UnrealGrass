@@ -66,6 +66,7 @@ void FGrassVertexFactoryShaderParameters::Bind(const FShaderParameterMap& Parame
     GrassData1Buffer.Bind(ParameterMap, TEXT("GrassData1"));
     GrassData2Buffer.Bind(ParameterMap, TEXT("GrassData2"));
     GrassLODLevel.Bind(ParameterMap, TEXT("GrassLODLevel"));
+    GrassCurvedNormalAmount.Bind(ParameterMap, TEXT("GrassCurvedNormalAmount"));
 }
 
 void FGrassVertexFactoryShaderParameters::GetElementShaderBindings(
@@ -123,6 +124,12 @@ void FGrassVertexFactoryShaderParameters::GetElementShaderBindings(
     if (GrassLODLevel.IsBound())
     {
         ShaderBindings.Add(GrassLODLevel, GrassVF->GetLODLevel());
+    }
+    
+    // 传递弯曲法线程度参数到 Shader
+    if (GrassCurvedNormalAmount.IsBound())
+    {
+        ShaderBindings.Add(GrassCurvedNormalAmount, GrassVF->GetCurvedNormalAmount());
     }
 }
 

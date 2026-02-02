@@ -122,7 +122,10 @@ private:
 
     // ======== LOD 参数 ========
     bool bEnableLOD = true;
-float LOD0Distance = 1000.0f;
+    float LOD0Distance = 1000.0f;
+
+    // ======== 草叶外观参数 ========
+    float CurvedNormalAmount = 0.5f;  // 弯曲法线程度
 
     // 标记当前帧是否已执行剔除
     mutable bool bCullingPerformedThisFrame = false;

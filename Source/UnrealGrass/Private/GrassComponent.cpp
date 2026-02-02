@@ -19,6 +19,10 @@ public:
     SHADER_USE_PARAMETER_STRUCT(FGrassPositionCS, FGlobalShader);
 
     BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+        // Clump Buffer 输入
+        SHADER_PARAMETER_SRV(StructuredBuffer<FVector4f>, InClumpData0) // Centre.xy, Direction.xy
+        SHADER_PARAMETER_SRV(StructuredBuffer<FVector4f>, InClumpData1) // HeightScale, WidthScale, WindPhase, Padding
+        // 输出 Buffers
         SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector3f>, OutPositions)
         SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector4f>, OutGrassData0)
         SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector4f>, OutGrassData1)
@@ -48,6 +52,31 @@ public:
 };
 
 IMPLEMENT_GLOBAL_SHADER(FGrassPositionCS, "/Plugin/UnrealGrass/Private/GrassPositionCS.usf", "MainCS", SF_Compute);
+
+// ============================================================================
+// Compute Shader 定义 - Clump 生成
+// ============================================================================
+class FClumpGenerationCS : public FGlobalShader
+{
+public:
+    DECLARE_GLOBAL_SHADER(FClumpGenerationCS);
+    SHADER_USE_PARAMETER_STRUCT(FClumpGenerationCS, FGlobalShader);
+
+    BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+        SHADER_PARAMETER_UAV(RWStructuredBuffer<float4>, OutClumpData0) // Centre.xy, Direction.xy
+        SHADER_PARAMETER_UAV(RWStructuredBuffer<float4>, OutClumpData1) // HeightScale, WidthScale, WindPhase, Padding
+        SHADER_PARAMETER(int32, NumClumps)
+        SHADER_PARAMETER(float, HeightVariation)
+        SHADER_PARAMETER(float, WidthVariation)
+    END_SHADER_PARAMETER_STRUCT()
+
+    static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+    {
+        return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+    }
+};
+
+IMPLEMENT_GLOBAL_SHADER(FClumpGenerationCS, "/Plugin/UnrealGrass/Private/GrassClumpCS.usf", "MainCS", SF_Compute);
 
 // ============================================================================
 // UGrassComponent 实现
@@ -97,6 +126,8 @@ void UGrassComponent::GenerateGrass()
     int32 CapturedNumClumpTypes = NumClumpTypes;
     float CapturedPullToCentre = ClumpParameters.PullToCentre;
     float CapturedPointInSameDirection = ClumpParameters.PointInSameDirection;
+    float CapturedClumpHeightVariation = ClumpHeightVariation;
+    float CapturedClumpWidthVariation = ClumpWidthVariation;
     
     // Blade 参数
     float CapturedBaseHeight = ClumpParameters.BaseHeight;
@@ -116,10 +147,70 @@ void UGrassComponent::GenerateGrass()
         [this, CapturedGridSize, CapturedSpacing, CapturedJitterStrength, 
          CapturedUseIndirectDraw, CapturedEnableFrustumCulling,
          CapturedNumClumps, CapturedNumClumpTypes, CapturedPullToCentre, CapturedPointInSameDirection,
+         CapturedClumpHeightVariation, CapturedClumpWidthVariation,
          CapturedBaseHeight, CapturedHeightRandom, CapturedBaseWidth, CapturedWidthRandom,
          CapturedBaseTilt, CapturedTiltRandom, CapturedBaseBend, CapturedBendRandom, CapturedTaperAmount](FRHICommandListImmediate& RHICmdList)
         {
             int32 Total = CapturedGridSize * CapturedGridSize;
+
+            // ========== 创建 Clump Buffer ==========
+            // ClumpData 使用两个 float4 来存储:
+            // ClumpData0: Centre.x, Centre.y, Direction.x, Direction.y
+            // ClumpData1: HeightScale, WidthScale, WindPhase, Padding
+            {
+                // 创建 ClumpData0 Buffer
+                FRHIBufferCreateDesc ClumpData0Desc = FRHIBufferCreateDesc::CreateStructured(
+                    TEXT("GrassClumpData0Buffer"),
+                    CapturedNumClumps * sizeof(FVector4f),
+                    sizeof(FVector4f))
+                    .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource)
+                    .SetInitialState(ERHIAccess::UAVCompute);
+                FBufferRHIRef ClumpData0Buffer = RHICmdList.CreateBuffer(ClumpData0Desc);
+                
+                // 创建 ClumpData1 Buffer
+                FRHIBufferCreateDesc ClumpData1Desc = FRHIBufferCreateDesc::CreateStructured(
+                    TEXT("GrassClumpData1Buffer"),
+                    CapturedNumClumps * sizeof(FVector4f),
+                    sizeof(FVector4f))
+                    .AddUsage(EBufferUsageFlags::UnorderedAccess | EBufferUsageFlags::ShaderResource)
+                    .SetInitialState(ERHIAccess::UAVCompute);
+                FBufferRHIRef ClumpData1Buffer = RHICmdList.CreateBuffer(ClumpData1Desc);
+
+                // 创建 UAV
+                auto ClumpData0UAVDesc = FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(CapturedNumClumps);
+                FUnorderedAccessViewRHIRef ClumpData0UAV = RHICmdList.CreateUnorderedAccessView(ClumpData0Buffer, ClumpData0UAVDesc);
+                auto ClumpData1UAVDesc = FRHIViewDesc::CreateBufferUAV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(CapturedNumClumps);
+                FUnorderedAccessViewRHIRef ClumpData1UAV = RHICmdList.CreateUnorderedAccessView(ClumpData1Buffer, ClumpData1UAVDesc);
+
+                // 执行 Clump 生成 Compute Shader
+                TShaderMapRef<FClumpGenerationCS> ClumpCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+                FClumpGenerationCS::FParameters ClumpParams;
+                ClumpParams.OutClumpData0 = ClumpData0UAV;
+                ClumpParams.OutClumpData1 = ClumpData1UAV;
+                ClumpParams.NumClumps = CapturedNumClumps;
+                ClumpParams.HeightVariation = CapturedClumpHeightVariation;
+                ClumpParams.WidthVariation = CapturedClumpWidthVariation;
+
+                FComputeShaderUtils::Dispatch(RHICmdList, ClumpCS, ClumpParams,
+                    FIntVector(FMath::DivideAndRoundUp(CapturedNumClumps, 64), 1, 1));
+
+                // 转换到 SRV 状态
+                RHICmdList.Transition(FRHITransitionInfo(ClumpData0Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+                RHICmdList.Transition(FRHITransitionInfo(ClumpData1Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+
+                // 创建 SRV
+                auto ClumpSRVDesc = FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(CapturedNumClumps);
+                ClumpBufferSRV = RHICmdList.CreateShaderResourceView(ClumpData0Buffer, ClumpSRVDesc);
+                ClumpBuffer = ClumpData0Buffer;
+                
+                // 创建 ClumpData1 的 SRV
+                auto Clump1SRVDesc = FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(CapturedNumClumps);
+                ClumpData1BufferSRV = RHICmdList.CreateShaderResourceView(ClumpData1Buffer, Clump1SRVDesc);
+                this->ClumpData1Buffer = ClumpData1Buffer;
+
+                UE_LOG(LogTemp, Log, TEXT("Created ClumpBuffer with %d clumps (HeightVar=%.2f, WidthVar=%.2f)"), 
+                    CapturedNumClumps, CapturedClumpHeightVariation, CapturedClumpWidthVariation);
+            }
 
             // ========== 创建所有实例位置的 StructuredBuffer ==========
             FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::CreateStructured(
@@ -187,6 +278,10 @@ void UGrassComponent::GenerateGrass()
             // ========== 执行位置生成 Compute Shader ==========
             TShaderMapRef<FGrassPositionCS> CS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
             FGrassPositionCS::FParameters Params;
+            // ClumpBuffer 输入
+            Params.InClumpData0 = ClumpBufferSRV;
+            Params.InClumpData1 = ClumpData1BufferSRV;
+            // 输出 Buffers
             Params.OutPositions = UAV;
             Params.OutGrassData0 = Data0UAV;
             Params.OutGrassData1 = Data1UAV;

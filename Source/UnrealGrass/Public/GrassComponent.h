@@ -10,10 +10,25 @@
 class UStaticMesh;
 
 // ============================================================================
-// 草叶实例数据结构体 (GPU Buffer 格式)
+// 草丛簇实例数据结构体 (GPU Buffer 格式)
+// 每个簇的属性，由 Compute Shader 在初始化时生成
+// ============================================================================
+struct FGrassClumpData
+{
+    FVector2f Centre;        // 簇中心位置 (UV空间, 0-1)
+    FVector2f Direction;     // 簇内草叶的统一朝向 (已归一化)
+    float HeightScale;       // 这个簇的高度缩放因子
+    float WidthScale;        // 这个簇的宽度缩放因子
+    float WindPhase;         // 风动画的相位偏移 (用于让不同簇的风效果有差异)
+    float Padding;           // 对齐到 32 字节 (float4 * 2)
+};
+
+// ============================================================================
+// 草叶实例数据结构体 (文档用途, 实际数据分散存储在多个 Buffer 中)
 // 每个草叶实例的属性，用于 Vertex Shader 中的贝塞尔曲线变形
 // ============================================================================
-struct FGrassInstanceData
+/*
+* struct FGrassInstanceData
 {
     FVector3f Position;      // 草叶根部位置
     float Height;            // 草叶高度
@@ -25,6 +40,8 @@ struct FGrassInstanceData
     float P1Offset;          // 贝塞尔控制点1偏移
     float P2Offset;          // 贝塞尔控制点2偏移
 };
+*/
+// ============================================================================
 
 // ============================================================================
 // 草丛簇参数结构体
@@ -77,6 +94,10 @@ struct FClumpParameters
     /** 草叶尖端收缩程度 (0=不收缩, 1=完全收缩) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0", ClampMax = "1.0"))
     float TaperAmount = 0.8f;
+
+    /** 草叶法线弯曲程度，让草叶边缘的法线向外弯曲，产生更柔和的光照效果 (0=平面法线, 1=完全弯曲) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float CurvedNormalAmount = 0.5f;
 };
 
 UCLASS(ClassGroup=(Rendering), meta=(BlueprintSpawnableComponent))
@@ -139,6 +160,14 @@ float LOD0Distance = 1000.0f;
     /** 丛簇类型数量（用于颜色/属性变化）*/
     UPROPERTY(EditAnywhere, Category = "Grass|Clumping", meta = (ClampMin = "1", ClampMax = "40"))
     int32 NumClumpTypes = 5;
+
+    /** 簇高度缩放的随机变化范围 (0=所有簇相同高度, 1=最大变化) */
+    UPROPERTY(EditAnywhere, Category = "Grass|Clumping", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float ClumpHeightVariation = 0.3f;
+
+    /** 簇宽度缩放的随机变化范围 (0=所有簇相同宽度, 1=最大变化) */
+    UPROPERTY(EditAnywhere, Category = "Grass|Clumping", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float ClumpWidthVariation = 0.2f;
 
     /** 草叶模型，如果为空则使用默认高质量草叶 */
     UPROPERTY(EditAnywhere, Category = "Grass")
@@ -227,5 +256,12 @@ float LOD0Distance = 1000.0f;
     // 用于传递给 SceneProxy 的 Mesh 信息
     int32 NumIndices = 0;
     int32 NumVertices = 0;
+
+    // ======== Clump Buffer 数据 ========
+    // 簇数据 Buffer，存储每个簇的中心位置、朝向、缩放等属性
+    FBufferRHIRef ClumpBuffer;            // ClumpData0: Centre.xy, Direction.xy
+    FShaderResourceViewRHIRef ClumpBufferSRV;
+    FBufferRHIRef ClumpData1Buffer;       // ClumpData1: HeightScale, WidthScale, WindPhase, Padding
+    FShaderResourceViewRHIRef ClumpData1BufferSRV;
 };
 

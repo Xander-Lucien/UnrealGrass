@@ -17,6 +17,10 @@ StructuredBuffer<float> GrassData2;   // P2Offset
 // 用于在 Pixel Shader 中区分 LOD 以便调试验证
 uint GrassLODLevel;
 
+// 弯曲法线程度 (0 = 平面法线, 1 = 完全弯曲)
+// 用于让草叶边缘的法线向外弯曲，产生更柔和的光照效果
+float GrassCurvedNormalAmount;
+
 // ============================================================================
 // Bezier Curve Functions
 // ============================================================================
@@ -104,7 +108,7 @@ struct FVertexFactoryInterpolantsVSToPS
 
     float4 Color : TEXCOORD3;
     
-    // LOD 级别 (存储在 TEXCOORD4 中, x 分量为 LOD 级别)
+    // LOD 级别
     nointerpolation float LODLevel : TEXCOORD4;
     
 #if INSTANCED_STEREO
@@ -117,7 +121,7 @@ struct FVertexFactoryInterpolantsVSToPS
 };
 
 // ============================================================================
-// 中间数据结构
+// 中间数据结构 - 增加草叶变形相关数据
 // ============================================================================
 struct FVertexFactoryIntermediates
 {
@@ -125,6 +129,14 @@ struct FVertexFactoryIntermediates
     FSceneDataIntermediates SceneData;
     float3x3 TangentToLocal;
     float3x3 TangentToWorld;
+    
+    // 草叶变形后的切线空间
+    float3 DeformedNormal;
+    float3 DeformedTangent;
+    float3 DeformedBitangent;
+    
+    // 原始UV
+    float2 TexCoord0;
 };
 
 FPrimitiveSceneData GetPrimitiveData(FVertexFactoryIntermediates Intermediates)
@@ -136,9 +148,48 @@ FPrimitiveSceneData GetPrimitiveData(FVertexFactoryIntermediates Intermediates)
 // Helper Functions
 // ============================================================================
 
-// Get grass instance data and deform vertex position
-float3 GetDeformedGrassPosition(float3 LocalPos, uint InstanceId)
+// 草叶变形结果结构
+struct FGrassDeformResult
 {
+    float3 Position;
+    float3 Normal;
+    float3 Tangent;
+    float3 Bitangent;
+};
+
+// 应用弯曲法线效果
+// WidthRatio: 归一化的左右位置 (0 = 左边缘, 0.5 = 中心, 1 = 右边缘)
+// BladeNormal: 原始的草叶法线
+// WidthDir: 草叶宽度方向
+float3 ApplyCurvedNormal(float3 BladeNormal, float3 WidthDir, float WidthRatio, float CurvedAmount)
+{
+    // 将 WidthRatio 从 [0, 1] 转换到 [-1, 1]
+    // 左边缘 -> -1, 中心 -> 0, 右边缘 -> +1
+    float NormalizedWidth = (WidthRatio - 0.5) * 2.0;
+    
+    // 弯曲程度: 边缘处弯曲最大，中心不弯曲
+    // 使用 sin 函数产生平滑的弯曲过渡
+    float CurveFactor = NormalizedWidth * CurvedAmount;
+    
+    // 将法线向宽度方向弯曲
+    // 左边缘的法线向左弯，右边缘的法线向右弯
+    float3 CurvedNormal = normalize(BladeNormal + WidthDir * CurveFactor);
+    
+    return CurvedNormal;
+}
+
+// Get grass instance data and deform vertex position with normal calculation
+FGrassDeformResult GetDeformedGrassPositionAndNormal(float3 LocalPos, uint InstanceId, half4 VertexColor)
+{
+    FGrassDeformResult Result;
+    Result.Position = LocalPos;
+    Result.Normal = float3(0, 1, 0);  // 默认法线朝Y轴
+    Result.Tangent = float3(1, 0, 0);
+    Result.Bitangent = float3(0, 0, 1);
+    
+    // 从顶点颜色获取左右侧信息
+    // G 通道: 0 = 左侧, 1 = 右侧
+    float VertexWidthRatio = VertexColor.g;
 #if USE_GRASS_INSTANCING
     // Get instance data
     float3 InstancePos = GrassInstancePositions[InstanceId];
@@ -155,15 +206,14 @@ float3 GetDeformedGrassPosition(float3 LocalPos, uint InstanceId)
     float P1Offset = Data1.w;
     
     // Normalized height along blade (0 = root, 1 = tip)
-    // Use vertex Z position normalized by default blade height (70.819 cm from original mesh)
     float DefaultBladeHeight = 70.819;
     float t = saturate(LocalPos.z / DefaultBladeHeight);
     
     // Width taper (narrower at top)
     float WidthScale = lerp(1.0, 1.0 - TaperAmount, t);
     float FinalWidth = Width * WidthScale;
-    float OriginalWidth = 3.445;  // Original blade half-width in cm
-    float WidthRatio = FinalWidth / (OriginalWidth * 2.0);
+    float OriginalWidth = 3.445;
+    float WidthRatioScale = FinalWidth / (OriginalWidth * 2.0);
     
     // Build bezier control points
     float TiltAmount = Tilt * Height;
@@ -182,19 +232,19 @@ float3 GetDeformedGrassPosition(float3 LocalPos, uint InstanceId)
     // Get position on bezier curve
     float3 CurvePos = CubicBezier(P0, P1, P2, P3, t);
     
-    // Get tangent for width direction
-    float3 Tangent = CubicBezierTangent(P0, P1, P2, P3, t);
-    float TangentLen = length(Tangent);
-    if (TangentLen > 0.001)
+    // Get tangent (up direction along blade)
+    float3 UpTangent = CubicBezierTangent(P0, P1, P2, P3, t);
+    float UpTangentLen = length(UpTangent);
+    if (UpTangentLen > 0.001)
     {
-        Tangent = Tangent / TangentLen;
+        UpTangent = UpTangent / UpTangentLen;
     }
     else
     {
-        Tangent = float3(0, 0, 1);
+        UpTangent = float3(0, 0, 1);
     }
     
-    // Width direction (perpendicular to tangent in XY plane)
+    // Width direction (perpendicular to facing direction in XY plane)
     float3 WidthDir = float3(-FacingDir.y, FacingDir.x, 0);
     float WidthDirLen = length(WidthDir);
     if (WidthDirLen > 0.001)
@@ -206,16 +256,37 @@ float3 GetDeformedGrassPosition(float3 LocalPos, uint InstanceId)
         WidthDir = float3(1, 0, 0);
     }
     
+    // Calculate normal: perpendicular to both width direction and up tangent
+    // Normal points away from the blade surface (front face)
+    float3 BladeNormal = cross(WidthDir, UpTangent);
+    float NormalLen = length(BladeNormal);
+    if (NormalLen > 0.001)
+    {
+        BladeNormal = BladeNormal / NormalLen;
+    }
+    else
+    {
+        // Fallback: use facing direction as normal
+        BladeNormal = float3(FacingDir.x, FacingDir.y, 0);
+    }
+    
+    // 应用弯曲法线效果
+    // 使用顶点颜色的 G 通道 (VertexWidthRatio) 来确定弯曲方向
+    BladeNormal = ApplyCurvedNormal(BladeNormal, WidthDir, VertexWidthRatio, GrassCurvedNormalAmount);
+    
     // Apply width offset (LocalPos.x is the width offset)
-    float3 FinalPos = CurvePos + WidthDir * LocalPos.x * WidthRatio;
+    float3 FinalPos = CurvePos + WidthDir * LocalPos.x * WidthRatioScale;
     
     // Add instance position
     FinalPos += InstancePos;
     
-    return FinalPos;
-#else
-    return LocalPos;
+    Result.Position = FinalPos;
+    Result.Normal = BladeNormal;
+    Result.Tangent = WidthDir;      // Tangent along width (U direction)
+    Result.Bitangent = UpTangent;   // Bitangent along height (V direction)
 #endif
+    
+    return Result;
 }
 
 // Simple offset-only version for depth passes
@@ -246,8 +317,38 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
     FVertexFactoryIntermediates Intermediates;
     Intermediates.SceneData = VF_GPUSCENE_GET_INTERMEDIATES(Input);
     Intermediates.Color = Input.Color FCOLOR_COMPONENT_SWIZZLE;
+    
+#if NUM_MATERIAL_TEXCOORDS_VERTEX > 0
+    Intermediates.TexCoord0 = Input.TexCoord0;
+#else
+    Intermediates.TexCoord0 = float2(0, 0);
+#endif
+    
+#if USE_GRASS_INSTANCING
+    // 计算变形后的位置和法线
+    FGrassDeformResult DeformResult = GetDeformedGrassPositionAndNormal(Input.Position.xyz, Input.InstanceId, Input.Color);
+    
+    // 使用变形后的切线空间
+    Intermediates.DeformedNormal = DeformResult.Normal;
+    Intermediates.DeformedTangent = DeformResult.Tangent;
+    Intermediates.DeformedBitangent = DeformResult.Bitangent;
+    
+    // 构建 TangentToLocal 矩阵 (行向量: Tangent, Bitangent, Normal)
+    Intermediates.TangentToLocal = float3x3(
+        DeformResult.Tangent,
+        DeformResult.Bitangent,
+        DeformResult.Normal
+    );
+#else
     Intermediates.TangentToLocal = CalcTangentBasis(Input.TangentX, Input.TangentZ);
+    Intermediates.DeformedNormal = Intermediates.TangentToLocal[2];
+    Intermediates.DeformedTangent = Intermediates.TangentToLocal[0];
+    Intermediates.DeformedBitangent = Intermediates.TangentToLocal[1];
+#endif
+    
+    // 转换到世界空间
     Intermediates.TangentToWorld = mul(Intermediates.TangentToLocal, GetLocalToWorld3x3());
+    
     return Intermediates;
 }
 
@@ -258,8 +359,8 @@ float4 VertexFactoryGetWorldPosition(FVertexFactoryInput Input, FVertexFactoryIn
     
 #if USE_GRASS_INSTANCING
     // Apply Bezier curve deformation
-    float3 DeformedPos = GetDeformedGrassPosition(Input.Position.xyz, Input.InstanceId);
-    float4 WorldPos = TransformLocalToTranslatedWorld(DeformedPos, LocalToWorld);
+    FGrassDeformResult DeformResult = GetDeformedGrassPositionAndNormal(Input.Position.xyz, Input.InstanceId, Input.Color);
+    float4 WorldPos = TransformLocalToTranslatedWorld(DeformResult.Position, LocalToWorld);
 #else
     float4 WorldPos = TransformLocalToTranslatedWorld(Input.Position.xyz, LocalToWorld);
 #endif
@@ -267,14 +368,16 @@ float4 VertexFactoryGetWorldPosition(FVertexFactoryInput Input, FVertexFactoryIn
     return WorldPos;
 }
 
-// Position Only version (for depth pass - use simple offset for performance)
+// Position Only version (for depth pass)
 float4 VertexFactoryGetWorldPosition(FPositionOnlyVertexFactoryInput Input)
 {
     FDFMatrix LocalToWorld = GetPrimitiveDataFromUniformBuffer().LocalToWorld;
     
 #if USE_GRASS_INSTANCING
-    float3 DeformedPos = GetDeformedGrassPosition(Input.Position.xyz, Input.InstanceId);
-    float4 WorldPos = TransformLocalToTranslatedWorld(DeformedPos, LocalToWorld);
+    // 深度 pass 不需要弯曲法线，使用默认的中心值 (0.5)
+    half4 DefaultColor = half4(0, 0.5, 1, 1);  // G = 0.5 表示中心，不弯曲
+    FGrassDeformResult DeformResult = GetDeformedGrassPositionAndNormal(Input.Position.xyz, Input.InstanceId, DefaultColor);
+    float4 WorldPos = TransformLocalToTranslatedWorld(DeformResult.Position, LocalToWorld);
 #else
     float4 WorldPos = TransformLocalToTranslatedWorld(Input.Position.xyz, LocalToWorld);
 #endif
@@ -288,8 +391,10 @@ float4 VertexFactoryGetWorldPosition(FPositionAndNormalOnlyVertexFactoryInput In
     FDFMatrix LocalToWorld = GetPrimitiveDataFromUniformBuffer().LocalToWorld;
     
 #if USE_GRASS_INSTANCING
-    float3 DeformedPos = GetDeformedGrassPosition(Input.Position.xyz, Input.InstanceId);
-    float4 WorldPos = TransformLocalToTranslatedWorld(DeformedPos, LocalToWorld);
+    // 阴影深度 pass 不需要弯曲法线，使用默认的中心值 (0.5)
+    half4 DefaultColor = half4(0, 0.5, 1, 1);  // G = 0.5 表示中心，不弯曲
+    FGrassDeformResult DeformResult = GetDeformedGrassPositionAndNormal(Input.Position.xyz, Input.InstanceId, DefaultColor);
+    float4 WorldPos = TransformLocalToTranslatedWorld(DeformResult.Position, LocalToWorld);
 #else
     float4 WorldPos = TransformLocalToTranslatedWorld(Input.Position.xyz, LocalToWorld);
 #endif
@@ -299,14 +404,23 @@ float4 VertexFactoryGetWorldPosition(FPositionAndNormalOnlyVertexFactoryInput In
 
 float3 VertexFactoryGetWorldNormal(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates)
 {
-    return Intermediates.TangentToWorld[2];
+    // 使用变形后的法线，转换到世界空间
+    return normalize(mul(Intermediates.DeformedNormal, GetLocalToWorld3x3()));
 }
 
 float3 VertexFactoryGetWorldNormal(FPositionAndNormalOnlyVertexFactoryInput Input)
 {
     FDFMatrix LocalToWorld = GetPrimitiveDataFromUniformBuffer().LocalToWorld;
     float3 InvScale = GetPrimitiveDataFromUniformBuffer().InvNonUniformScale;
+    
+#if USE_GRASS_INSTANCING
+    // 阴影 pass 不需要弯曲法线，使用默认的中心值 (0.5)
+    half4 DefaultColor = half4(0, 0.5, 1, 1);  // G = 0.5 表示中心，不弯曲
+    FGrassDeformResult DeformResult = GetDeformedGrassPositionAndNormal(Input.Position.xyz, Input.InstanceId, DefaultColor);
+    return RotateLocalToWorld(DeformResult.Normal, LocalToWorld, InvScale);
+#else
     return RotateLocalToWorld(Input.Normal.xyz, LocalToWorld, InvScale);
+#endif
 }
 
 float4 VertexFactoryGetRasterizedWorldPosition(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates, float4 InWorldPosition)
@@ -352,23 +466,10 @@ FMaterialPixelParameters GetMaterialPixelParameters(FVertexFactoryInterpolantsVS
 
     Result.VertexColor = Interpolants.Color;
     
-    // LOD 调试: 如果是 LOD 0，将顶点颜色设为红色；LOD 1 设为绿色
-    // 这样可以在材质中通过 Vertex Color 来区分 LOD 级别
-    if (Interpolants.LODLevel < 0.5)
-    {
-        // LOD 0 - 红色
-        Result.VertexColor = float4(1.0, 0.0, 0.0, 1.0);
-    }
-    else
-    {
-        // LOD 1 - 绿色  
-        Result.VertexColor = float4(0.0, 1.0, 0.0, 1.0);
-    }
-    
     half3 TangentToWorld0 = Interpolants.TangentToWorld0.xyz;
     half4 TangentToWorld2 = Interpolants.TangentToWorld2;
     Result.TangentToWorld = AssembleTangentToWorld(TangentToWorld0, TangentToWorld2);
-    Result.UnMirrored = 1;
+    Result.UnMirrored = TangentToWorld2.w;
     Result.TwoSidedSign = 1;
     
     return Result;
@@ -386,12 +487,12 @@ FMaterialVertexParameters GetMaterialVertexParameters(
     Result.SceneData = Intermediates.SceneData;
     Result.WorldPosition = WorldPosition;
     Result.VertexColor = Intermediates.Color;
-    Result.TangentToWorld = mul(TangentToLocal, GetLocalToWorld3x3());
+    Result.TangentToWorld = Intermediates.TangentToWorld;
     Result.PreSkinnedPosition = Input.Position.xyz;
-    Result.PreSkinnedNormal = TangentToLocal[2].xyz;
+    Result.PreSkinnedNormal = Intermediates.DeformedNormal;
     
 #if NUM_MATERIAL_TEXCOORDS_VERTEX > 0
-    Result.TexCoords[0] = Input.TexCoord0;
+    Result.TexCoords[0] = Intermediates.TexCoord0;
 #endif
 
 #if ENABLE_NEW_HLSL_GENERATOR
@@ -432,6 +533,9 @@ FVertexFactoryInterpolantsVSToPS VertexFactoryGetInterpolantsVSToPS(FVertexFacto
     // 传递 LOD 级别到 Pixel Shader
     Interpolants.LODLevel = (float)GrassLODLevel;
     
+    // 传递切线空间到世界空间的变换
+    // TangentToWorld0 = Tangent (X axis of tangent space in world)
+    // TangentToWorld2 = Normal (Z axis of tangent space in world), w = determinant sign
     Interpolants.TangentToWorld0.xyz = Intermediates.TangentToWorld[0];
     Interpolants.TangentToWorld0.w = 0;
     Interpolants.TangentToWorld2 = float4(Intermediates.TangentToWorld[2], sign(determinant(Intermediates.TangentToLocal)));
