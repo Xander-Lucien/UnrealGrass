@@ -25,6 +25,8 @@ public:
         // Clump Buffer 输入
         SHADER_PARAMETER_SRV(StructuredBuffer<FVector4f>, InClumpData0) // Centre.xy, Direction.xy
         SHADER_PARAMETER_SRV(StructuredBuffer<FVector4f>, InClumpData1) // HeightScale, WidthScale, WindPhase, Padding
+        // ClumpType 参数 Buffer (每种簇类型的独立参数)
+        SHADER_PARAMETER_SRV(StructuredBuffer<FVector4f>, InClumpTypeParams)
         // 输出 Buffers
         SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector3f>, OutPositions)
         SHADER_PARAMETER_UAV(RWStructuredBuffer<FVector4f>, OutGrassData0)
@@ -35,17 +37,7 @@ public:
         SHADER_PARAMETER(float, JitterStrength)
         SHADER_PARAMETER(int32, NumClumps)
         SHADER_PARAMETER(int32, NumClumpTypes)
-        SHADER_PARAMETER(float, PullToCentre)
-        SHADER_PARAMETER(float, PointInSameDirection)
-        SHADER_PARAMETER(float, BaseHeight)
-        SHADER_PARAMETER(float, HeightRandom)
-        SHADER_PARAMETER(float, BaseWidth)
-        SHADER_PARAMETER(float, WidthRandom)
-        SHADER_PARAMETER(float, BaseTilt)
-        SHADER_PARAMETER(float, TiltRandom)
-        SHADER_PARAMETER(float, BaseBend)
-        SHADER_PARAMETER(float, BendRandom)
-        SHADER_PARAMETER(float, TaperAmount)
+        SHADER_PARAMETER(float, TaperAmount) // 全局参数，所有簇类型共享
     END_SHADER_PARAMETER_STRUCT()
 
     static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -67,10 +59,9 @@ public:
 
     BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
         SHADER_PARAMETER_UAV(RWStructuredBuffer<float4>, OutClumpData0) // Centre.xy, Direction.xy
-        SHADER_PARAMETER_UAV(RWStructuredBuffer<float4>, OutClumpData1) // HeightScale, WidthScale, WindPhase, Padding
+        SHADER_PARAMETER_UAV(RWStructuredBuffer<float4>, OutClumpData1) // HeightScale, WidthScale, WindPhase, ClumpTypeIndex
         SHADER_PARAMETER(int32, NumClumps)
-        SHADER_PARAMETER(float, HeightVariation)
-        SHADER_PARAMETER(float, WidthVariation)
+        SHADER_PARAMETER(int32, NumClumpTypes)
     END_SHADER_PARAMETER_STRUCT()
 
     static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -112,6 +103,23 @@ UGrassComponent::UGrassComponent()
 {
     PrimaryComponentTick.bCanEverTick = false;
     bWantsInitializeComponent = true;
+    
+    // 默认添加一个簇类型
+    ClumpTypes.SetNum(1);
+}
+
+void UGrassComponent::EnsureValidClumpTypes()
+{
+    // 确保至少有一个簇类型
+    if (ClumpTypes.Num() == 0)
+    {
+        ClumpTypes.SetNum(1);
+    }
+    // 确保不超过最大数量
+    if (ClumpTypes.Num() > MAX_CLUMP_TYPES)
+    {
+        ClumpTypes.SetNum(MAX_CLUMP_TYPES);
+    }
 }
 
 void UGrassComponent::BeginPlay()
@@ -148,25 +156,19 @@ void UGrassComponent::GenerateGrass()
     bool CapturedUseIndirectDraw = bUseIndirectDraw;
     bool CapturedEnableFrustumCulling = bEnableFrustumCulling;
     
+    // 确保 ClumpTypes 数组有效
+    EnsureValidClumpTypes();
+    
     // Clump 参数
     int32 CapturedNumClumps = NumClumps;
-    int32 CapturedNumClumpTypes = NumClumpTypes;
+    int32 CapturedNumClumpTypes = GetNumClumpTypes();
     int32 CapturedVoronoiTextureSize = VoronoiTextureSize;
-    float CapturedPullToCentre = ClumpParameters.PullToCentre;
-    float CapturedPointInSameDirection = ClumpParameters.PointInSameDirection;
-    float CapturedClumpHeightVariation = ClumpParameters.HeightVariation;
-    float CapturedClumpWidthVariation = ClumpParameters.WidthVariation;
     
-    // Blade 参数 (从新的 BladeParameters 结构体获取)
-    float CapturedBaseHeight = BladeParameters.BaseHeight;
-    float CapturedHeightRandom = BladeParameters.HeightRandom;
-    float CapturedBaseWidth = BladeParameters.BaseWidth;
-    float CapturedWidthRandom = BladeParameters.WidthRandom;
-    float CapturedBaseTilt = BladeParameters.BaseTilt;
-    float CapturedTiltRandom = BladeParameters.TiltRandom;
-    float CapturedBaseBend = BladeParameters.BaseBend;
-    float CapturedBendRandom = BladeParameters.BendRandom;
-    float CapturedTaperAmount = BladeParameters.TaperAmount;
+    // 全局渲染参数
+    float CapturedTaperAmount = RenderParameters.TaperAmount;
+    
+    // 复制 ClumpTypes 数组供渲染线程使用
+    TArray<FClumpTypeParameters> CapturedClumpTypes = ClumpTypes;
 
     UE_LOG(LogTemp, Log, TEXT("Generating %d grass positions on GPU (FrustumCulling=%d, NumClumps=%d, VoronoiSize=%d)..."), 
         InstanceCount, CapturedEnableFrustumCulling ? 1 : 0, CapturedNumClumps, CapturedVoronoiTextureSize);
@@ -174,10 +176,8 @@ void UGrassComponent::GenerateGrass()
     ENQUEUE_RENDER_COMMAND(GenerateGrassPositions)(
         [this, CapturedGridSize, CapturedSpacing, CapturedJitterStrength, 
          CapturedUseIndirectDraw, CapturedEnableFrustumCulling,
-         CapturedNumClumps, CapturedNumClumpTypes, CapturedVoronoiTextureSize, CapturedPullToCentre, CapturedPointInSameDirection,
-         CapturedClumpHeightVariation, CapturedClumpWidthVariation,
-         CapturedBaseHeight, CapturedHeightRandom, CapturedBaseWidth, CapturedWidthRandom,
-         CapturedBaseTilt, CapturedTiltRandom, CapturedBaseBend, CapturedBendRandom, CapturedTaperAmount](FRHICommandListImmediate& RHICmdList)
+         CapturedNumClumps, CapturedNumClumpTypes, CapturedVoronoiTextureSize,
+         CapturedTaperAmount, CapturedClumpTypes](FRHICommandListImmediate& RHICmdList)
         {
             int32 Total = CapturedGridSize * CapturedGridSize;
 
@@ -216,8 +216,7 @@ void UGrassComponent::GenerateGrass()
                 ClumpParams.OutClumpData0 = ClumpData0UAV;
                 ClumpParams.OutClumpData1 = ClumpData1UAV;
                 ClumpParams.NumClumps = CapturedNumClumps;
-                ClumpParams.HeightVariation = CapturedClumpHeightVariation;
-                ClumpParams.WidthVariation = CapturedClumpWidthVariation;
+                ClumpParams.NumClumpTypes = CapturedNumClumpTypes;
 
                 FComputeShaderUtils::Dispatch(RHICmdList, ClumpCS, ClumpParams,
                     FIntVector(FMath::DivideAndRoundUp(CapturedNumClumps, 64), 1, 1));
@@ -236,8 +235,8 @@ void UGrassComponent::GenerateGrass()
                 ClumpData1BufferSRV = RHICmdList.CreateShaderResourceView(ClumpData1Buffer, Clump1SRVDesc);
                 this->ClumpData1Buffer = ClumpData1Buffer;
 
-                UE_LOG(LogTemp, Log, TEXT("Created ClumpBuffer with %d clumps (HeightVar=%.2f, WidthVar=%.2f)"), 
-                    CapturedNumClumps, CapturedClumpHeightVariation, CapturedClumpWidthVariation);
+                UE_LOG(LogTemp, Log, TEXT("Created ClumpBuffer with %d clumps"), 
+                    CapturedNumClumps);
             }
 
             // ========== 创建 Voronoi Texture (预计算 Clump 查找表) ==========
@@ -344,6 +343,59 @@ void UGrassComponent::GenerateGrass()
             auto Data2SRVDesc = FRHIViewDesc::CreateBufferSRV().SetType(FRHIViewDesc::EBufferType::Structured).SetNumElements(Total);
             GrassData2BufferSRV = RHICmdList.CreateShaderResourceView(GrassData2Buffer, Data2SRVDesc);
 
+            // ========== 创建 ClumpType 参数 Buffer ==========
+            // 每种簇类型的参数打包成 float4 数组:
+            // [0]: PullToCentre, PointInSameDirection, BaseHeight, HeightRandom
+            // [1]: BaseWidth, WidthRandom, BaseTilt, TiltRandom
+            // [2]: BaseBend, BendRandom, 0, 0
+            const int32 FloatsPerClumpType = 12; // 3 个 float4
+            TArray<float> ClumpTypeData;
+            ClumpTypeData.SetNum(CapturedNumClumpTypes * FloatsPerClumpType);
+            
+            for (int32 i = 0; i < CapturedNumClumpTypes; ++i)
+            {
+                const FClumpTypeParameters& TypeParams = CapturedClumpTypes[i];
+                int32 BaseIdx = i * FloatsPerClumpType;
+                // float4[0]
+                ClumpTypeData[BaseIdx + 0] = TypeParams.PullToCentre;
+                ClumpTypeData[BaseIdx + 1] = TypeParams.PointInSameDirection;
+                ClumpTypeData[BaseIdx + 2] = TypeParams.BaseHeight;
+                ClumpTypeData[BaseIdx + 3] = TypeParams.HeightRandom;
+                // float4[1]
+                ClumpTypeData[BaseIdx + 4] = TypeParams.BaseWidth;
+                ClumpTypeData[BaseIdx + 5] = TypeParams.WidthRandom;
+                ClumpTypeData[BaseIdx + 6] = TypeParams.BaseTilt;
+                ClumpTypeData[BaseIdx + 7] = TypeParams.TiltRandom;
+                // float4[2]
+                ClumpTypeData[BaseIdx + 8] = TypeParams.BaseBend;
+                ClumpTypeData[BaseIdx + 9] = TypeParams.BendRandom;
+                ClumpTypeData[BaseIdx + 10] = 0.0f; // Reserved
+                ClumpTypeData[BaseIdx + 11] = 0.0f; // Reserved
+            }
+            
+            // 创建 ClumpType 参数 Buffer
+            FRHIBufferCreateDesc ClumpTypeParamsDesc = FRHIBufferCreateDesc::CreateStructured(
+                TEXT("GrassClumpTypeParamsBuffer"),
+                CapturedNumClumpTypes * FloatsPerClumpType * sizeof(float),
+                sizeof(FVector4f))
+                .AddUsage(EBufferUsageFlags::ShaderResource)
+                .SetInitialState(ERHIAccess::CopyDest);
+            ClumpTypeParamsBuffer = RHICmdList.CreateBuffer(ClumpTypeParamsDesc);
+            
+            // 上传数据
+            void* ClumpTypeParamsData = RHICmdList.LockBuffer(ClumpTypeParamsBuffer, 0, ClumpTypeData.Num() * sizeof(float), RLM_WriteOnly);
+            FMemory::Memcpy(ClumpTypeParamsData, ClumpTypeData.GetData(), ClumpTypeData.Num() * sizeof(float));
+            RHICmdList.UnlockBuffer(ClumpTypeParamsBuffer);
+            RHICmdList.Transition(FRHITransitionInfo(ClumpTypeParamsBuffer, ERHIAccess::CopyDest, ERHIAccess::SRVMask));
+            
+            // 创建 SRV
+            auto ClumpTypeSRVDesc = FRHIViewDesc::CreateBufferSRV()
+                .SetType(FRHIViewDesc::EBufferType::Structured)
+                .SetNumElements(CapturedNumClumpTypes * 3); // 每种类型 3 个 float4
+            ClumpTypeParamsBufferSRV = RHICmdList.CreateShaderResourceView(ClumpTypeParamsBuffer, ClumpTypeSRVDesc);
+            
+            UE_LOG(LogTemp, Log, TEXT("Created ClumpTypeParamsBuffer for %d clump types"), CapturedNumClumpTypes);
+
             // ========== 执行位置生成 Compute Shader ==========
             TShaderMapRef<FGrassPositionCS> CS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
             FGrassPositionCS::FParameters Params;
@@ -353,6 +405,8 @@ void UGrassComponent::GenerateGrass()
             // ClumpBuffer 输入
             Params.InClumpData0 = ClumpBufferSRV;
             Params.InClumpData1 = ClumpData1BufferSRV;
+            // ClumpType 参数 Buffer
+            Params.InClumpTypeParams = ClumpTypeParamsBufferSRV;
             // 输出 Buffers
             Params.OutPositions = UAV;
             Params.OutGrassData0 = Data0UAV;
@@ -363,16 +417,6 @@ void UGrassComponent::GenerateGrass()
             Params.JitterStrength = CapturedJitterStrength;
             Params.NumClumps = CapturedNumClumps;
             Params.NumClumpTypes = CapturedNumClumpTypes;
-            Params.PullToCentre = CapturedPullToCentre;
-            Params.PointInSameDirection = CapturedPointInSameDirection;
-            Params.BaseHeight = CapturedBaseHeight;
-            Params.HeightRandom = CapturedHeightRandom;
-            Params.BaseWidth = CapturedBaseWidth;
-            Params.WidthRandom = CapturedWidthRandom;
-            Params.BaseTilt = CapturedBaseTilt;
-            Params.TiltRandom = CapturedTiltRandom;
-            Params.BaseBend = CapturedBaseBend;
-            Params.BendRandom = CapturedBendRandom;
             Params.TaperAmount = CapturedTaperAmount;
 
             FComputeShaderUtils::Dispatch(RHICmdList, CS, Params,
@@ -681,3 +725,82 @@ void UGrassComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials
         OutMaterials.Add(GrassMaterial);
     }
 }
+
+#if WITH_EDITOR
+void UGrassComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+    Super::PostEditChangeProperty(PropertyChangedEvent);
+    
+    // 如果没有启用实时预览，直接返回
+    if (!bEnableRealtimePreview)
+    {
+        return;
+    }
+    
+    // 获取变化的属性名
+    FName PropertyName = (PropertyChangedEvent.Property != nullptr) 
+        ? PropertyChangedEvent.Property->GetFName() 
+        : NAME_None;
+    
+    // 获取变化的结构体成员名（用于处理嵌套结构体的属性）
+    FName MemberPropertyName = (PropertyChangedEvent.MemberProperty != nullptr)
+        ? PropertyChangedEvent.MemberProperty->GetFName()
+        : NAME_None;
+    
+    // 需要重新生成草地的属性列表
+    static const TArray<FName> RegenerateProperties = {
+        // 基础网格参数
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, GridSize),
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, Spacing),
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, JitterStrength),
+        // 簇参数
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, NumClumps),
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, VoronoiTextureSize),
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, ClumpTypes),
+        // 渲染参数
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, RenderParameters),
+    };
+    
+    // 检查是否需要重新生成
+    bool bShouldRegenerate = false;
+    
+    // 检查直接属性变化
+    if (RegenerateProperties.Contains(PropertyName) || RegenerateProperties.Contains(MemberPropertyName))
+    {
+        bShouldRegenerate = true;
+    }
+    
+    // 对于数组元素的修改（如 ClumpTypes 数组中的元素）
+    // PropertyChangedEvent.ChangeType 可以帮助判断是添加/删除/修改
+    if (PropertyChangedEvent.ChangeType == EPropertyChangeType::ArrayAdd ||
+        PropertyChangedEvent.ChangeType == EPropertyChangeType::ArrayRemove ||
+        PropertyChangedEvent.ChangeType == EPropertyChangeType::ArrayClear)
+    {
+        bShouldRegenerate = true;
+    }
+    
+    // 如果修改的是 ClumpTypes 数组内的属性（通过检查属性链）
+    if (PropertyChangedEvent.Property != nullptr)
+    {
+        // 遍历属性链查找是否在 ClumpTypes 或 RenderParameters 内
+        for (int32 i = 0; i < PropertyChangedEvent.GetNumObjectsBeingEdited(); ++i)
+        {
+            // 检查是否修改了 FClumpTypeParameters 或 FGrassRenderParameters 结构体内的属性
+            FString PropertyPath = PropertyChangedEvent.Property->GetPathName();
+            if (PropertyPath.Contains(TEXT("ClumpTypeParameters")) || 
+                PropertyPath.Contains(TEXT("GrassRenderParameters")))
+            {
+                bShouldRegenerate = true;
+                break;
+            }
+        }
+    }
+    
+    // 执行重新生成
+    if (bShouldRegenerate)
+    {
+        UE_LOG(LogTemp, Log, TEXT("GrassComponent: Property '%s' changed, regenerating grass..."), *PropertyName.ToString());
+        GenerateGrass();
+    }
+}
+#endif

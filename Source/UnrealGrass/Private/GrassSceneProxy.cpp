@@ -130,7 +130,7 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
 , GrassBoundingRadius(Component->GrassBoundingRadius)
 , bEnableLOD(Component->bEnableLOD)  // LOD 参数
 , LOD0Distance(Component->LOD0Distance)
-, CurvedNormalAmount(Component->BladeParameters.CurvedNormalAmount)  // 弯曲法线参数 (从 BladeParameters 获取)
+, CurvedNormalAmount(Component->RenderParameters.CurvedNormalAmount)  // 弯曲法线参数 (从 RenderParameters 获取)
 , Material(Component->GrassMaterial)
 {
     bVerifyUsedMaterials = false;

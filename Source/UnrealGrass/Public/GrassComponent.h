@@ -44,13 +44,26 @@ struct FGrassClumpData
 // ============================================================================
 
 // ============================================================================
-// 草叶形态参数结构体 (Blade Shape)
+// 草丛簇类型参数结构体 (每种簇类型的完整参数配置)
+// 用户可以为每种簇类型单独设置草叶形态参数
 // ============================================================================
 USTRUCT(BlueprintType)
-struct FGrassBladeParameters
+struct FClumpTypeParameters
 {
     GENERATED_BODY()
 
+    // ======== 聚集行为参数 ========
+    
+    /** 控制草叶朝向簇中心的程度，值越高草叶越聚集在簇中心 (0=均匀分布, 1=完全聚集) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float PullToCentre = 0.3f;
+
+    /** 控制簇内草叶朝向的一致性，值越高簇内草叶朝向越统一 (0=随机朝向, 1=完全统一) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float PointInSameDirection = 0.5f;
+
+    // ======== 草叶形态参数 ========
+    
     /** 草叶的基础高度 (厘米) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "1.0", ClampMax = "200.0"))
     float BaseHeight = 50.0f;
@@ -82,6 +95,15 @@ struct FGrassBladeParameters
     /** 草叶弯曲度的随机变化范围 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "0.0", ClampMax = "0.5"))
     float BendRandom = 0.15f;
+};
+
+// ============================================================================
+// 全局草叶渲染参数 (所有簇类型共享的参数)
+// ============================================================================
+USTRUCT(BlueprintType)
+struct FGrassRenderParameters
+{
+    GENERATED_BODY()
 
     /** 草叶尖端收缩程度 (0=不收缩保持宽度, 1=完全收缩成尖点) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "0.0", ClampMax = "1.0"))
@@ -93,29 +115,9 @@ struct FGrassBladeParameters
 };
 
 // ============================================================================
-// 草丛簇参数结构体 (Clumping Behavior)
+// 最大簇类型数量常量
 // ============================================================================
-USTRUCT(BlueprintType)
-struct FClumpParameters
-{
-    GENERATED_BODY()
-
-    /** 控制草叶朝向簇中心的程度，值越高草叶越聚集在簇中心 (0=均匀分布, 1=完全聚集) */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-    float PullToCentre = 0.3f;
-
-    /** 控制簇内草叶朝向的一致性，值越高簇内草叶朝向越统一 (0=随机朝向, 1=完全统一) */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-    float PointInSameDirection = 0.5f;
-
-    /** 簇高度缩放的随机变化范围 (0=所有簇相同高度, 1=最大变化) */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-    float HeightVariation = 0.3f;
-
-    /** 簇宽度缩放的随机变化范围 (0=所有簇相同宽度, 1=最大变化) */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-    float WidthVariation = 0.2f;
-};
+constexpr int32 MAX_CLUMP_TYPES = 5;
 
 UCLASS(ClassGroup=(Rendering), meta=(BlueprintSpawnableComponent))
 class UNREALGRASS_API UGrassComponent : public UPrimitiveComponent
@@ -164,17 +166,17 @@ public:
     UPROPERTY(EditAnywhere, Category = "Grass|LOD", meta = (ClampMin = "100.0", EditCondition = "bEnableLOD"))
     float LOD0Distance = 1000.0f;
 
-    // ======== 草叶形态参数 ========
+    // ======== 全局渲染参数 ========
     
-    /** 草叶形态参数（高度、宽度、弯曲、倾斜等）*/
-    UPROPERTY(EditAnywhere, Category = "Grass|Blade Shape")
-    FGrassBladeParameters BladeParameters;
+    /** 全局草叶渲染参数（所有簇类型共享）*/
+    UPROPERTY(EditAnywhere, Category = "Grass|Rendering")
+    FGrassRenderParameters RenderParameters;
 
-    // ======== 丛簇参数 ========
+    // ======== 丛簇类型参数 ========
     
-    /** 草丛簇行为参数（聚集程度、朝向一致性等）*/
-    UPROPERTY(EditAnywhere, Category = "Grass|Clumping")
-    FClumpParameters ClumpParameters;
+    /** 草丛簇类型参数数组，每种类型可以有不同的草叶形态 (最多5种) */
+    UPROPERTY(EditAnywhere, Category = "Grass|Clump Types", meta = (TitleProperty = "BaseHeight"))
+    TArray<FClumpTypeParameters> ClumpTypes;
 
     /** 丛簇数量 */
     UPROPERTY(EditAnywhere, Category = "Grass|Clumping", meta = (ClampMin = "1", ClampMax = "256"))
@@ -183,10 +185,6 @@ public:
     /** Voronoi Texture 分辨率（越高精度越高，但内存占用也越大）*/
     UPROPERTY(EditAnywhere, Category = "Grass|Clumping", meta = (ClampMin = "64", ClampMax = "1024"))
     int32 VoronoiTextureSize = 256;
-
-    /** 丛簇类型数量（用于颜色/属性变化）*/
-    UPROPERTY(EditAnywhere, Category = "Grass|Clumping", meta = (ClampMin = "1", ClampMax = "40"))
-    int32 NumClumpTypes = 5;
 
     /** 草叶模型，如果为空则使用默认高质量草叶 */
     UPROPERTY(EditAnywhere, Category = "Grass")
@@ -283,11 +281,34 @@ public:
     FBufferRHIRef ClumpData1Buffer;       // ClumpData1: HeightScale, WidthScale, WindPhase, Padding
     FShaderResourceViewRHIRef ClumpData1BufferSRV;
 
+    // ======== Clump Type 参数 Buffer ========
+    // 存储每种簇类型的参数，供 GPU 读取
+    FBufferRHIRef ClumpTypeParamsBuffer;
+    FShaderResourceViewRHIRef ClumpTypeParamsBufferSRV;
+
     // ======== Voronoi Texture 数据 ========
     // 预计算的 Voronoi 查找纹理，用于 O(1) 复杂度获取最近 Clump
     // R = ClumpIndex (归一化), G = CentreX, B = CentreY, A = Distance
     FTextureRHIRef VoronoiTexture;
     FShaderResourceViewRHIRef VoronoiTextureSRV;
     FUnorderedAccessViewRHIRef VoronoiTextureUAV;
-};
 
+    // ======== 辅助方法 ========
+    
+    /** 获取有效的簇类型数量（确保至少有1个，最多MAX_CLUMP_TYPES个）*/
+    int32 GetNumClumpTypes() const { return FMath::Clamp(ClumpTypes.Num(), 1, MAX_CLUMP_TYPES); }
+    
+    /** 确保 ClumpTypes 数组有效（至少有一个默认类型）*/
+    void EnsureValidClumpTypes();
+
+#if WITH_EDITOR
+    /** 编辑器中属性变化时自动重新生成草地 */
+    virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+
+#if WITH_EDITORONLY_DATA
+    /** 是否启用实时预览（属性修改后自动更新）*/
+    UPROPERTY(EditAnywhere, Category = "Grass|Editor")
+    bool bEnableRealtimePreview = true;
+#endif
+};

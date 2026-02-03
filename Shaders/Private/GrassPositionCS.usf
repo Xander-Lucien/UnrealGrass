@@ -20,9 +20,16 @@ SamplerState InVoronoiTextureSampler;
 
 // 输入 Buffers - Clump 属性数据
 // ClumpData0: Centre.x, Centre.y, Direction.x, Direction.y
-// ClumpData1: HeightScale, WidthScale, WindPhase, Padding
+// ClumpData1: HeightScale, WidthScale, WindPhase, ClumpTypeIndex
 StructuredBuffer<float4> InClumpData0;
 StructuredBuffer<float4> InClumpData1;
+
+// 输入 Buffer - 每种簇类型的参数
+// 每种类型占用 3 个 float4:
+// [TypeIndex * 3 + 0]: PullToCentre, PointInSameDirection, BaseHeight, HeightRandom
+// [TypeIndex * 3 + 1]: BaseWidth, WidthRandom, BaseTilt, TiltRandom
+// [TypeIndex * 3 + 2]: BaseBend, BendRandom, Reserved, Reserved
+StructuredBuffer<float4> InClumpTypeParams;
 
 // Output buffers
 RWStructuredBuffer<float3> OutPositions;
@@ -38,18 +45,8 @@ float JitterStrength;
 // Clump parameters
 int NumClumps;
 int NumClumpTypes;
-float PullToCentre;
-float PointInSameDirection;
 
-// Grass blade parameters
-float BaseHeight;
-float HeightRandom;
-float BaseWidth;
-float WidthRandom;
-float BaseTilt;
-float TiltRandom;
-float BaseBend;
-float BendRandom;
+// 全局草叶参数 (所有簇类型共享)
 float TaperAmount;
 
 // ============================================================================
@@ -73,6 +70,48 @@ float2 Random2D(float2 seed)
         Hash(seed) * 2.0 - 1.0,
         Hash(seed + float2(1.0, 0.0)) * 2.0 - 1.0
     );
+}
+
+// ============================================================================
+// 从 ClumpTypeParams Buffer 读取指定类型的参数
+// ============================================================================
+struct FClumpTypeData
+{
+    float PullToCentre;
+    float PointInSameDirection;
+    float BaseHeight;
+    float HeightRandom;
+    float BaseWidth;
+    float WidthRandom;
+    float BaseTilt;
+    float TiltRandom;
+    float BaseBend;
+    float BendRandom;
+};
+
+FClumpTypeData GetClumpTypeData(int TypeIndex)
+{
+    FClumpTypeData Data;
+    
+    int BaseIdx = TypeIndex * 3;
+    float4 Params0 = InClumpTypeParams[BaseIdx + 0];
+    float4 Params1 = InClumpTypeParams[BaseIdx + 1];
+    float4 Params2 = InClumpTypeParams[BaseIdx + 2];
+    
+    Data.PullToCentre = Params0.x;
+    Data.PointInSameDirection = Params0.y;
+    Data.BaseHeight = Params0.z;
+    Data.HeightRandom = Params0.w;
+    
+    Data.BaseWidth = Params1.x;
+    Data.WidthRandom = Params1.y;
+    Data.BaseTilt = Params1.z;
+    Data.TiltRandom = Params1.w;
+    
+    Data.BaseBend = Params2.x;
+    Data.BendRandom = Params2.y;
+    
+    return Data;
 }
 
 // ============================================================================
@@ -119,12 +158,17 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     
     // 从 ClumpBuffer 读取 Clump 属性
     float4 ClumpData0 = InClumpData0[ClumpIndex]; // Centre.xy, Direction.xy
-    float4 ClumpData1 = InClumpData1[ClumpIndex]; // HeightScale, WidthScale, WindPhase, Padding
+    float4 ClumpData1 = InClumpData1[ClumpIndex]; // HeightScale, WidthScale, WindPhase, ClumpTypeIndex
     
     float2 ClumpDirection = ClumpData0.zw;
     float ClumpHeightScale = ClumpData1.x;
     float ClumpWidthScale = ClumpData1.y;
     // float ClumpWindPhase = ClumpData1.z; // 未来可用于风动画
+    
+    // 获取这个 Clump 的类型索引，并读取对应类型的参数
+    int ClumpTypeIndex = (int)(ClumpData1.w + 0.5);
+    ClumpTypeIndex = clamp(ClumpTypeIndex, 0, NumClumpTypes - 1);
+    FClumpTypeData TypeData = GetClumpTypeData(ClumpTypeIndex);
     
     // World space clump center
     float2 ClumpCentreWorld = float2(
@@ -132,10 +176,10 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
         ClumpCentre.y * HalfSize * 2.0 - HalfSize
     );
     
-    // Pull to centre
+    // Pull to centre - 使用每种类型独立的参数
     float2 ToCentre = ClumpCentreWorld - Position.xy;
-    Position.x += ToCentre.x * PullToCentre;
-    Position.y += ToCentre.y * PullToCentre;
+    Position.x += ToCentre.x * TypeData.PullToCentre;
+    Position.y += ToCentre.y * TypeData.PullToCentre;
     
     // Random seeds for this instance
     float2 Seed1 = float2(x * 0.1 + 0.5, y * 0.1 + 0.7);
@@ -143,12 +187,12 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     float2 Seed3 = float2(x * 0.3 + 3.7, y * 0.3 + 4.9);
     float2 Seed4 = float2(x * 0.4 + 5.2, y * 0.4 + 6.8);
     
-    // Grass blade properties with randomization
+    // Grass blade properties with randomization - 使用每种类型独立的参数
     // 应用 Clump 级别的缩放
-    float Height = (BaseHeight + (Hash(Seed1) * 2.0 - 1.0) * HeightRandom) * ClumpHeightScale;
-    float Width = (BaseWidth + (Hash(Seed2) * 2.0 - 1.0) * WidthRandom) * ClumpWidthScale;
-    float Tilt = BaseTilt + (Hash(Seed3) * 2.0 - 1.0) * TiltRandom;
-    float Bend = BaseBend + (Hash(Seed4) * 2.0 - 1.0) * BendRandom;
+    float Height = (TypeData.BaseHeight + (Hash(Seed1) * 2.0 - 1.0) * TypeData.HeightRandom) * ClumpHeightScale;
+    float Width = (TypeData.BaseWidth + (Hash(Seed2) * 2.0 - 1.0) * TypeData.WidthRandom) * ClumpWidthScale;
+    float Tilt = TypeData.BaseTilt + (Hash(Seed3) * 2.0 - 1.0) * TypeData.TiltRandom;
+    float Bend = TypeData.BaseBend + (Hash(Seed4) * 2.0 - 1.0) * TypeData.BendRandom;
     
     // Clamp values
     Height = max(Height, 1.0);
@@ -156,12 +200,12 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     Tilt = saturate(Tilt);
     Bend = saturate(Bend);
     
-    // Facing direction - 使用 ClumpBuffer 中预计算的 Clump 朝向
+    // Facing direction - 使用 ClumpBuffer 中预计算的 Clump 朝向和每种类型独立的一致性参数
     float2 IndividualDir = Random2D(float2(x * 0.15, y * 0.15));
     float IndividualDirLen = length(IndividualDir);
     if (IndividualDirLen > 0.001) IndividualDir = IndividualDir / IndividualDirLen;
     
-    float2 FacingDir = lerp(IndividualDir, ClumpDirection, PointInSameDirection);
+    float2 FacingDir = lerp(IndividualDir, ClumpDirection, TypeData.PointInSameDirection);
     float FacingDirLen = length(FacingDir);
     if (FacingDirLen > 0.001) FacingDir = FacingDir / FacingDirLen;
     
