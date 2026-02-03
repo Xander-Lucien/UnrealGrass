@@ -154,19 +154,19 @@ void UGrassComponent::GenerateGrass()
     int32 CapturedVoronoiTextureSize = VoronoiTextureSize;
     float CapturedPullToCentre = ClumpParameters.PullToCentre;
     float CapturedPointInSameDirection = ClumpParameters.PointInSameDirection;
-    float CapturedClumpHeightVariation = ClumpHeightVariation;
-    float CapturedClumpWidthVariation = ClumpWidthVariation;
+    float CapturedClumpHeightVariation = ClumpParameters.HeightVariation;
+    float CapturedClumpWidthVariation = ClumpParameters.WidthVariation;
     
-    // Blade 参数
-    float CapturedBaseHeight = ClumpParameters.BaseHeight;
-    float CapturedHeightRandom = ClumpParameters.HeightRandom;
-    float CapturedBaseWidth = ClumpParameters.BaseWidth;
-    float CapturedWidthRandom = ClumpParameters.WidthRandom;
-    float CapturedBaseTilt = ClumpParameters.BaseTilt;
-    float CapturedTiltRandom = ClumpParameters.TiltRandom;
-    float CapturedBaseBend = ClumpParameters.BaseBend;
-    float CapturedBendRandom = ClumpParameters.BendRandom;
-    float CapturedTaperAmount = ClumpParameters.TaperAmount;
+    // Blade 参数 (从新的 BladeParameters 结构体获取)
+    float CapturedBaseHeight = BladeParameters.BaseHeight;
+    float CapturedHeightRandom = BladeParameters.HeightRandom;
+    float CapturedBaseWidth = BladeParameters.BaseWidth;
+    float CapturedWidthRandom = BladeParameters.WidthRandom;
+    float CapturedBaseTilt = BladeParameters.BaseTilt;
+    float CapturedTiltRandom = BladeParameters.TiltRandom;
+    float CapturedBaseBend = BladeParameters.BaseBend;
+    float CapturedBendRandom = BladeParameters.BendRandom;
+    float CapturedTaperAmount = BladeParameters.TaperAmount;
 
     UE_LOG(LogTemp, Log, TEXT("Generating %d grass positions on GPU (FrustumCulling=%d, NumClumps=%d, VoronoiSize=%d)..."), 
         InstanceCount, CapturedEnableFrustumCulling ? 1 : 0, CapturedNumClumps, CapturedVoronoiTextureSize);

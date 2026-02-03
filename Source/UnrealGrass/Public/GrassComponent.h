@@ -44,60 +44,77 @@ struct FGrassClumpData
 // ============================================================================
 
 // ============================================================================
-// 草丛簇参数结构体
+// 草叶形态参数结构体 (Blade Shape)
+// ============================================================================
+USTRUCT(BlueprintType)
+struct FGrassBladeParameters
+{
+    GENERATED_BODY()
+
+    /** 草叶的基础高度 (厘米) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "1.0", ClampMax = "200.0"))
+    float BaseHeight = 50.0f;
+
+    /** 草叶高度的随机变化范围 (厘米) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "0.0", ClampMax = "100.0"))
+    float HeightRandom = 20.0f;
+
+    /** 草叶的基础宽度 (厘米) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "0.1", ClampMax = "20.0"))
+    float BaseWidth = 5.0f;
+
+    /** 草叶宽度的随机变化范围 (厘米) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "0.0", ClampMax = "10.0"))
+    float WidthRandom = 2.0f;
+
+    /** 草叶的基础倾斜度，控制顶端偏离垂直方向的程度 (0=直立, 1=完全倾斜) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float BaseTilt = 0.2f;
+
+    /** 草叶倾斜度的随机变化范围 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "0.0", ClampMax = "0.5"))
+    float TiltRandom = 0.1f;
+
+    /** 草叶的基础弯曲度，控制整体曲线形状 (0=直线, 1=强弯曲) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float BaseBend = 0.3f;
+
+    /** 草叶弯曲度的随机变化范围 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "0.0", ClampMax = "0.5"))
+    float BendRandom = 0.15f;
+
+    /** 草叶尖端收缩程度 (0=不收缩保持宽度, 1=完全收缩成尖点) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float TaperAmount = 0.8f;
+
+    /** 草叶法线弯曲程度，让草叶边缘的法线向外弯曲，产生更柔和的光照效果 (0=平面法线, 1=完全弯曲) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float CurvedNormalAmount = 0.5f;
+};
+
+// ============================================================================
+// 草丛簇参数结构体 (Clumping Behavior)
 // ============================================================================
 USTRUCT(BlueprintType)
 struct FClumpParameters
 {
     GENERATED_BODY()
 
-    /** 控制草叶朝向族中心的程度，值越高草叶越集中在族中心 */
+    /** 控制草叶朝向簇中心的程度，值越高草叶越聚集在簇中心 (0=均匀分布, 1=完全聚集) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0", ClampMax = "1.0"))
     float PullToCentre = 0.3f;
 
-    /** 控制族内草叶朝向的一致性，值越高族内草叶朝向越统一 */
+    /** 控制簇内草叶朝向的一致性，值越高簇内草叶朝向越统一 (0=随机朝向, 1=完全统一) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0", ClampMax = "1.0"))
     float PointInSameDirection = 0.5f;
 
-    /** 草叶的基础高度 (厘米) */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "1.0"))
-    float BaseHeight = 50.0f;
-
-    /** 草叶高度的随机变化范围 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0"))
-    float HeightRandom = 20.0f;
-
-    /** 草叶的基础宽度 (厘米) */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.1"))
-    float BaseWidth = 5.0f;
-
-    /** 草叶宽度的随机变化范围 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0"))
-    float WidthRandom = 2.0f;
-
-    /** 草叶的基础倾斜度，控制顶端偏离垂直方向的程度 */
+    /** 簇高度缩放的随机变化范围 (0=所有簇相同高度, 1=最大变化) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-    float BaseTilt = 0.2f;
+    float HeightVariation = 0.3f;
 
-    /** 草叶倾斜度的随机变化范围 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0", ClampMax = "0.5"))
-    float TiltRandom = 0.1f;
-
-    /** 草叶的基础弯曲度，控制整体曲线形状 */
+    /** 簇宽度缩放的随机变化范围 (0=所有簇相同宽度, 1=最大变化) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-    float BaseBend = 0.3f;
-
-    /** 草叶弯曲度的随机变化范围 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0", ClampMax = "0.5"))
-    float BendRandom = 0.15f;
-
-    /** 草叶尖端收缩程度 (0=不收缩, 1=完全收缩) */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-    float TaperAmount = 0.8f;
-
-    /** 草叶法线弯曲程度，让草叶边缘的法线向外弯曲，产生更柔和的光照效果 (0=平面法线, 1=完全弯曲) */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clump", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-    float CurvedNormalAmount = 0.5f;
+    float WidthVariation = 0.2f;
 };
 
 UCLASS(ClassGroup=(Rendering), meta=(BlueprintSpawnableComponent))
@@ -131,7 +148,7 @@ public:
 
     /** 草叶可见的最大距离（距离剔除）*/
     UPROPERTY(EditAnywhere, Category = "Grass|Culling", meta = (ClampMin = "100.0", EditCondition = "bEnableDistanceCulling"))
-    float MaxVisibleDistance = 10000.0f;
+    float MaxVisibleDistance = 5000.0f;
 
     /** 草叶的包围盒半径（用于扩展剔除检测）*/
     UPROPERTY(EditAnywhere, Category = "Grass|Culling", meta = (ClampMin = "1.0"))
@@ -145,11 +162,17 @@ public:
 
     /** LOD 0 到 LOD 1 的切换距离（厘米）*/
     UPROPERTY(EditAnywhere, Category = "Grass|LOD", meta = (ClampMin = "100.0", EditCondition = "bEnableLOD"))
-float LOD0Distance = 1000.0f;
+    float LOD0Distance = 1000.0f;
+
+    // ======== 草叶形态参数 ========
+    
+    /** 草叶形态参数（高度、宽度、弯曲、倾斜等）*/
+    UPROPERTY(EditAnywhere, Category = "Grass|Blade Shape")
+    FGrassBladeParameters BladeParameters;
 
     // ======== 丛簇参数 ========
     
-    /** 草丛簇参数 */
+    /** 草丛簇行为参数（聚集程度、朝向一致性等）*/
     UPROPERTY(EditAnywhere, Category = "Grass|Clumping")
     FClumpParameters ClumpParameters;
 
@@ -164,14 +187,6 @@ float LOD0Distance = 1000.0f;
     /** 丛簇类型数量（用于颜色/属性变化）*/
     UPROPERTY(EditAnywhere, Category = "Grass|Clumping", meta = (ClampMin = "1", ClampMax = "40"))
     int32 NumClumpTypes = 5;
-
-    /** 簇高度缩放的随机变化范围 (0=所有簇相同高度, 1=最大变化) */
-    UPROPERTY(EditAnywhere, Category = "Grass|Clumping", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-    float ClumpHeightVariation = 0.3f;
-
-    /** 簇宽度缩放的随机变化范围 (0=所有簇相同宽度, 1=最大变化) */
-    UPROPERTY(EditAnywhere, Category = "Grass|Clumping", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-    float ClumpWidthVariation = 0.2f;
 
     /** 草叶模型，如果为空则使用默认高质量草叶 */
     UPROPERTY(EditAnywhere, Category = "Grass")
