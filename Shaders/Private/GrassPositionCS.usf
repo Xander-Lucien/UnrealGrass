@@ -18,6 +18,10 @@
 Texture2D<float4> InVoronoiTexture;
 SamplerState InVoronoiTextureSampler;
 
+// 输入 - 高度图 Texture (用于地形高度采样)
+Texture2D<float> InHeightmapTexture;
+SamplerState InHeightmapTextureSampler;
+
 // 输入 Buffers - Clump 属性数据
 // ClumpData0: Centre.x, Centre.y, Direction.x, Direction.y
 // ClumpData1: HeightScale, WidthScale, WindPhase, ClumpTypeIndex
@@ -45,6 +49,13 @@ float JitterStrength;
 // Clump parameters
 int NumClumps;
 int NumClumpTypes;
+
+// 高度图参数
+float2 HeightmapWorldSize;    // 高度图覆盖的世界空间大小 (X, Y)
+float2 HeightmapWorldOffset;  // 高度图世界空间偏移 (用于对齐地形)
+float HeightmapScale;         // 高度缩放因子
+float HeightmapOffset;        // 高度偏移值
+int bUseHeightmap;            // 是否启用高度图 (0 或 1)
 
 // 全局草叶参数 (所有簇类型共享)
 float TaperAmount;
@@ -115,6 +126,22 @@ FClumpTypeData GetClumpTypeData(int TypeIndex)
 }
 
 // ============================================================================
+// 高度图采样函数
+// ============================================================================
+float SampleHeightmap(float2 WorldPos)
+{
+    // 将世界坐标转换为高度图 UV 坐标
+    float2 HeightmapUV = (WorldPos - HeightmapWorldOffset) / HeightmapWorldSize + 0.5;
+    HeightmapUV = saturate(HeightmapUV);
+    
+    // 采样高度图 (使用双线性过滤以获得平滑的高度过渡)
+    float HeightValue = InHeightmapTexture.SampleLevel(InHeightmapTextureSampler, HeightmapUV, 0);
+    
+    // 应用缩放和偏移
+    return HeightValue * HeightmapScale + HeightmapOffset;
+}
+
+// ============================================================================
 // 主函数
 // ============================================================================
 [numthreads(8, 8, 1)]
@@ -139,6 +166,12 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     float2 Jitter = Random2D(float2(x, y)) * Spacing * JitterStrength * 0.5;
     Position.x += Jitter.x;
     Position.y += Jitter.y;
+    
+    // ========== 从高度图采样获取地形高度 ==========
+    if (bUseHeightmap > 0)
+    {
+        Position.z = SampleHeightmap(Position.xy);
+    }
     
     // UV for Voronoi texture sampling
     float2 UV = float2(

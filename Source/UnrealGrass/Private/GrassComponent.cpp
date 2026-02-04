@@ -8,6 +8,7 @@
 #include "GlobalShader.h"
 #include "ShaderParameterStruct.h"
 #include "Materials/Material.h"
+#include "Engine/Texture2D.h"
 
 // ============================================================================
 // Compute Shader 定义 - 位置生成
@@ -22,6 +23,9 @@ public:
         // Voronoi Texture 输入 (用于 O(1) 查找最近 Clump)
         SHADER_PARAMETER_SRV(Texture2D<float4>, InVoronoiTexture)
         SHADER_PARAMETER_SAMPLER(SamplerState, InVoronoiTextureSampler)
+        // 高度图 Texture 输入 (用于地形高度采样)
+        SHADER_PARAMETER_SRV(Texture2D<float>, InHeightmapTexture)
+        SHADER_PARAMETER_SAMPLER(SamplerState, InHeightmapTextureSampler)
         // Clump Buffer 输入
         SHADER_PARAMETER_SRV(StructuredBuffer<FVector4f>, InClumpData0) // Centre.xy, Direction.xy
         SHADER_PARAMETER_SRV(StructuredBuffer<FVector4f>, InClumpData1) // HeightScale, WidthScale, WindPhase, Padding
@@ -38,6 +42,12 @@ public:
         SHADER_PARAMETER(int32, NumClumps)
         SHADER_PARAMETER(int32, NumClumpTypes)
         SHADER_PARAMETER(float, TaperAmount) // 全局参数，所有簇类型共享
+        // 高度图参数
+        SHADER_PARAMETER(FVector2f, HeightmapWorldSize)
+        SHADER_PARAMETER(FVector2f, HeightmapWorldOffset)
+        SHADER_PARAMETER(float, HeightmapScale)
+        SHADER_PARAMETER(float, HeightmapOffset)
+        SHADER_PARAMETER(int32, bUseHeightmap)
     END_SHADER_PARAMETER_STRUCT()
 
     static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -167,19 +177,47 @@ void UGrassComponent::GenerateGrass()
     // 全局渲染参数
     float CapturedTaperAmount = RenderParameters.TaperAmount;
     
+    // 高度图参数
+    bool CapturedUseHeightmap = bUseHeightmap && HeightmapTexture != nullptr;
+    FVector2f CapturedHeightmapWorldSize = FVector2f(HeightmapWorldSize.X, HeightmapWorldSize.Y);
+    FVector2f CapturedHeightmapWorldOffset = FVector2f(HeightmapWorldOffset.X, HeightmapWorldOffset.Y);
+    float CapturedHeightmapScale = HeightmapScale;
+    float CapturedHeightmapOffset = HeightmapOffset;
+    
+    // 获取高度图纹理资源（在游戏线程获取）
+    FTextureResource* HeightmapResource = CapturedUseHeightmap ? HeightmapTexture->GetResource() : nullptr;
+    
     // 复制 ClumpTypes 数组供渲染线程使用
     TArray<FClumpTypeParameters> CapturedClumpTypes = ClumpTypes;
 
-    UE_LOG(LogTemp, Log, TEXT("Generating %d grass positions on GPU (FrustumCulling=%d, NumClumps=%d, VoronoiSize=%d)..."), 
-        InstanceCount, CapturedEnableFrustumCulling ? 1 : 0, CapturedNumClumps, CapturedVoronoiTextureSize);
+    UE_LOG(LogTemp, Log, TEXT("Generating %d grass positions on GPU (FrustumCulling=%d, NumClumps=%d, VoronoiSize=%d, UseHeightmap=%d)..."), 
+        InstanceCount, CapturedEnableFrustumCulling ? 1 : 0, CapturedNumClumps, CapturedVoronoiTextureSize, CapturedUseHeightmap ? 1 : 0);
 
     ENQUEUE_RENDER_COMMAND(GenerateGrassPositions)(
         [this, CapturedGridSize, CapturedSpacing, CapturedJitterStrength, 
          CapturedUseIndirectDraw, CapturedEnableFrustumCulling,
          CapturedNumClumps, CapturedNumClumpTypes, CapturedVoronoiTextureSize,
-         CapturedTaperAmount, CapturedClumpTypes](FRHICommandListImmediate& RHICmdList)
+         CapturedTaperAmount, CapturedClumpTypes,
+         CapturedUseHeightmap, CapturedHeightmapWorldSize, CapturedHeightmapWorldOffset,
+         CapturedHeightmapScale, CapturedHeightmapOffset, HeightmapResource](FRHICommandListImmediate& RHICmdList)
         {
             int32 Total = CapturedGridSize * CapturedGridSize;
+
+            // ========== 获取高度图 SRV ==========
+            FShaderResourceViewRHIRef LocalHeightmapSRV;
+            if (CapturedUseHeightmap && HeightmapResource)
+            {
+                FTextureRHIRef HeightmapRHI = HeightmapResource->TextureRHI;
+                if (HeightmapRHI.IsValid())
+                {
+                    LocalHeightmapSRV = RHICmdList.CreateShaderResourceView(
+                        HeightmapRHI, 
+                        FRHIViewDesc::CreateTextureSRV().SetDimensionFromTexture(HeightmapRHI)
+                    );
+                    HeightmapTextureSRV = LocalHeightmapSRV;
+                    UE_LOG(LogTemp, Log, TEXT("Created Heightmap SRV for terrain height sampling"));
+                }
+            }
 
             // ========== 创建 Clump Buffer ==========
             // ClumpData 使用两个 float4 来存储:
@@ -402,6 +440,17 @@ void UGrassComponent::GenerateGrass()
             // Voronoi Texture 输入 (用于 O(1) 查找最近 Clump)
             Params.InVoronoiTexture = VoronoiTextureSRV;
             Params.InVoronoiTextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+            // 高度图 Texture 输入
+            if (CapturedUseHeightmap && LocalHeightmapSRV.IsValid())
+            {
+                Params.InHeightmapTexture = LocalHeightmapSRV;
+            }
+            else
+            {
+                // 使用 Voronoi Texture 作为占位符（不会被实际使用，因为 bUseHeightmap = 0）
+                Params.InHeightmapTexture = VoronoiTextureSRV;
+            }
+            Params.InHeightmapTextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
             // ClumpBuffer 输入
             Params.InClumpData0 = ClumpBufferSRV;
             Params.InClumpData1 = ClumpData1BufferSRV;
@@ -418,6 +467,12 @@ void UGrassComponent::GenerateGrass()
             Params.NumClumps = CapturedNumClumps;
             Params.NumClumpTypes = CapturedNumClumpTypes;
             Params.TaperAmount = CapturedTaperAmount;
+            // 高度图参数
+            Params.HeightmapWorldSize = CapturedHeightmapWorldSize;
+            Params.HeightmapWorldOffset = CapturedHeightmapWorldOffset;
+            Params.HeightmapScale = CapturedHeightmapScale;
+            Params.HeightmapOffset = CapturedHeightmapOffset;
+            Params.bUseHeightmap = CapturedUseHeightmap ? 1 : 0;
 
             FComputeShaderUtils::Dispatch(RHICmdList, CS, Params,
                 FIntVector(
@@ -759,6 +814,13 @@ void UGrassComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
         GET_MEMBER_NAME_CHECKED(UGrassComponent, ClumpTypes),
         // 渲染参数
         GET_MEMBER_NAME_CHECKED(UGrassComponent, RenderParameters),
+        // 高度图参数
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, bUseHeightmap),
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, HeightmapTexture),
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, HeightmapWorldSize),
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, HeightmapWorldOffset),
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, HeightmapScale),
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, HeightmapOffset),
     };
     
     // 检查是否需要重新生成

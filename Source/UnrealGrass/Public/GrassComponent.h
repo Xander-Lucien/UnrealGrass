@@ -172,6 +172,32 @@ public:
     UPROPERTY(EditAnywhere, Category = "Grass|Rendering")
     FGrassRenderParameters RenderParameters;
 
+    // ======== 地形高度图设置 ========
+    
+    /** 是否启用高度图，让草叶适应地形 */
+    UPROPERTY(EditAnywhere, Category = "Grass|Heightmap")
+    bool bUseHeightmap = false;
+
+    /** 高度图纹理（R通道存储归一化高度值 0-1）*/
+    UPROPERTY(EditAnywhere, Category = "Grass|Heightmap", meta = (EditCondition = "bUseHeightmap"))
+    UTexture2D* HeightmapTexture = nullptr;
+
+    /** 高度图覆盖的世界空间大小 (X, Y) 厘米 */
+    UPROPERTY(EditAnywhere, Category = "Grass|Heightmap", meta = (EditCondition = "bUseHeightmap"))
+    FVector2D HeightmapWorldSize = FVector2D(10000.0, 10000.0);
+
+    /** 高度图世界空间偏移（用于对齐地形）*/
+    UPROPERTY(EditAnywhere, Category = "Grass|Heightmap", meta = (EditCondition = "bUseHeightmap"))
+    FVector2D HeightmapWorldOffset = FVector2D(0.0, 0.0);
+
+    /** 高度图缩放因子（高度图值乘以此值得到实际高度）*/
+    UPROPERTY(EditAnywhere, Category = "Grass|Heightmap", meta = (EditCondition = "bUseHeightmap"))
+    float HeightmapScale = 1000.0f;
+
+    /** 高度偏移值（添加到最终高度）*/
+    UPROPERTY(EditAnywhere, Category = "Grass|Heightmap", meta = (EditCondition = "bUseHeightmap"))
+    float HeightmapOffset = 0.0f;
+
     // ======== 丛簇类型参数 ========
     
     /** 草丛簇类型参数数组，每种类型可以有不同的草叶形态 (最多5种) */
@@ -292,6 +318,10 @@ public:
     FTextureRHIRef VoronoiTexture;
     FShaderResourceViewRHIRef VoronoiTextureSRV;
     FUnorderedAccessViewRHIRef VoronoiTextureUAV;
+
+    // ======== 高度图 Texture 数据 ========
+    // 用于地形高度采样的纹理 SRV（从 UTexture2D 获取）
+    FShaderResourceViewRHIRef HeightmapTextureSRV;
 
     // ======== 辅助方法 ========
     
