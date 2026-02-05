@@ -27,6 +27,14 @@ float GrassCurvedNormalAmount;
 // 注意：值过大(>0.5)反而会让草地变薄，推荐值为 0.2 ~ 0.4
 float GrassViewRotationAmount;
 
+float3 GrassWindDirection;
+float GrassWindStrength;
+Texture2D GrassWindNoiseTexture;
+SamplerState GrassWindNoiseSampler;
+float2 GrassWindNoiseScale;
+float GrassWindNoiseStrength;
+float GrassWindNoiseSpeed;
+
 // ============================================================================
 // Bezier Curve Functions
 // ============================================================================
@@ -153,7 +161,6 @@ FPrimitiveSceneData GetPrimitiveData(FVertexFactoryIntermediates Intermediates)
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
 // 草叶变形结果结构
 struct FGrassDeformResult
 {
@@ -234,6 +241,33 @@ FGrassDeformResult GetDeformedGrassPositionAndNormal(float3 LocalPos, uint Insta
     float3 P3 = float3(FacingDir.x * TiltAmount,
                        FacingDir.y * TiltAmount,
                        Height);
+
+    float2 WindDir2D = GrassWindDirection.xy;
+    float WindDirLen = length(WindDir2D);
+    float2 BaseWindDir = WindDirLen > 0.001 ? (WindDir2D / WindDirLen) : float2(1.0, 0.0);
+
+    float2 NoiseUV = InstancePos.xy * GrassWindNoiseScale + ResolvedView.RealTime.x * GrassWindNoiseSpeed;
+    float NoiseValue = GrassWindNoiseTexture.SampleLevel(GrassWindNoiseSampler, NoiseUV, 0).r;
+    float NoiseSigned = (NoiseValue * 2.0 - 1.0) * GrassWindNoiseStrength;
+
+    float WindRotateAngle = NoiseSigned * 0.6;
+    float WindCos = cos(WindRotateAngle);
+    float WindSin = sin(WindRotateAngle);
+    float2 WindDir = normalize(float2(
+        BaseWindDir.x * WindCos - BaseWindDir.y * WindSin,
+        BaseWindDir.x * WindSin + BaseWindDir.y * WindCos));
+
+    float2 WindFacingDir = normalize(float2(
+        FacingDir.x * WindCos - FacingDir.y * WindSin,
+        FacingDir.x * WindSin + FacingDir.y * WindCos));
+    FacingDir = WindFacingDir;
+
+    float WindStrength = max(0.0, GrassWindStrength * (1.0 + NoiseSigned));
+    float WindOffset = Height * WindStrength;
+    float3 WindVec = float3(WindDir.x, WindDir.y, 0.0) * WindOffset;
+    P1 += WindVec * 0.25;
+    P2 += WindVec * 0.6;
+    P3 += WindVec;
     
     // Get position on bezier curve
     float3 CurvePos = CubicBezier(P0, P1, P2, P3, t);

@@ -208,6 +208,24 @@ public:
     UPROPERTY(EditAnywhere, Category = "Grass|Heightmap", meta = (EditCondition = "bUseHeightmap"))
     float HeightmapOffset = 0.0f;
 
+    // ======== 风场扰动噪声设置 ========
+
+    /** 风场扰动噪声纹理 */
+    UPROPERTY(EditAnywhere, Category = "Grass|Wind")
+    UTexture2D* WindNoiseTexture = nullptr;
+
+    /** 噪声纹理缩放（控制噪声在世界中的频率）*/
+    UPROPERTY(EditAnywhere, Category = "Grass|Wind")
+    FVector2D WindNoiseScale = FVector2D(0.001f, 0.001f);
+
+    /** 噪声对风向/弯曲的影响强度 */
+    UPROPERTY(EditAnywhere, Category = "Grass|Wind", meta = (ClampMin = "0.0", ClampMax = "2.0"))
+    float WindNoiseStrength = 0.5f;
+
+    /** 噪声滚动速度 */
+    UPROPERTY(EditAnywhere, Category = "Grass|Wind", meta = (ClampMin = "0.0"))
+    float WindNoiseSpeed = 0.1f;
+
     // ======== 丛簇类型参数 ========
     
     /** 草丛簇类型参数数组，每种类型可以有不同的草叶形态 (最多5种) */
@@ -235,6 +253,7 @@ public:
     // 生命周期函数
     virtual void BeginPlay() override;
     virtual void OnRegister() override;
+    virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
     virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
     virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
@@ -352,3 +371,4 @@ public:
     bool bEnableRealtimePreview = true;
 #endif
 };
+

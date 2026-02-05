@@ -9,6 +9,8 @@
 #include "ShaderParameterStruct.h"
 #include "Materials/Material.h"
 #include "Engine/Texture2D.h"
+#include "SceneInterface.h"
+#include "Kismet/KismetSystemLibrary.h"
 
 // ============================================================================
 // Compute Shader 定义 - 位置生成
@@ -111,9 +113,10 @@ IMPLEMENT_GLOBAL_SHADER(FVoronoiGenerationCS, "/Plugin/UnrealGrass/Private/Grass
 // ============================================================================
 UGrassComponent::UGrassComponent()
 {
-    PrimaryComponentTick.bCanEverTick = false;
+    PrimaryComponentTick.bCanEverTick = true;
+    PrimaryComponentTick.bStartWithTickEnabled = true;
     bWantsInitializeComponent = true;
-    
+
     // 默认添加一个簇类型
     ClumpTypes.SetNum(1);
 }
@@ -146,13 +149,45 @@ void UGrassComponent::BeginPlay()
 void UGrassComponent::OnRegister()
 {
     Super::OnRegister();
-    
+
     if (GetWorld() && GetWorld()->IsGameWorld() == false)
     {
         if (InstanceCount == 0)
         {
             UE_LOG(LogTemp, Log, TEXT("GrassComponent::OnRegister - Auto generating grass in editor..."));
             GenerateGrass();
+        }
+    }
+}
+
+void UGrassComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+    Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+    if (GetWorld() && GetWorld()->Scene)
+    {
+        FVector WindDirection;
+        float WindSpeed;
+        float WindMinGust;
+        float WindMaxGust;
+
+        // 在组件所在位置采样风力参数
+        GetWorld()->Scene->GetWindParameters(GetComponentLocation(), WindDirection, WindSpeed, WindMinGust, WindMaxGust);
+
+        // 格式化输出信息
+        FString DebugInfo = FString::Printf(
+            TEXT("Wind Data at %s:\nDirection: %s\nSpeed: %.2f\nMin Gust: %.2f\nMax Gust: %.2f"),
+            *GetComponentLocation().ToString(),
+            *WindDirection.ToString(),
+            WindSpeed,
+            WindMinGust,
+            WindMaxGust
+        );
+
+        // 打印到屏幕
+        if (GEngine)
+        {
+            GEngine->AddOnScreenDebugMessage(1, DeltaTime, FColor::Cyan, DebugInfo);
         }
     }
 }
@@ -821,6 +856,11 @@ void UGrassComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
         GET_MEMBER_NAME_CHECKED(UGrassComponent, HeightmapWorldOffset),
         GET_MEMBER_NAME_CHECKED(UGrassComponent, HeightmapScale),
         GET_MEMBER_NAME_CHECKED(UGrassComponent, HeightmapOffset),
+        // 风场噪声参数
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, WindNoiseTexture),
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, WindNoiseScale),
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, WindNoiseStrength),
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, WindNoiseSpeed),
     };
     
     // 检查是否需要重新生成

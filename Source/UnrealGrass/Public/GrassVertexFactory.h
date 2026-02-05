@@ -7,6 +7,7 @@
 #include "LocalVertexFactory.h"
 #include "ShaderParameters.h"
 #include "RenderResource.h"
+#include "RHIResources.h"
 
 /**
  * 草地 Vertex Factory
@@ -38,6 +39,19 @@ public:
     void SetViewRotationAmount(float InAmount) { ViewRotationAmount = InAmount; }
     float GetViewRotationAmount() const { return ViewRotationAmount; }
 
+    // 设置风场扰动噪声参数
+    void SetWindNoiseParameters(FTextureRHIRef InTexture, const FVector2f& InScale, float InStrength, float InSpeed)
+    {
+        WindNoiseTexture = InTexture;
+        WindNoiseScale = InScale;
+        WindNoiseStrength = InStrength;
+        WindNoiseSpeed = InSpeed;
+    }
+    FTextureRHIRef GetWindNoiseTexture() const { return WindNoiseTexture; }
+    FVector2f GetWindNoiseScale() const { return WindNoiseScale; }
+    float GetWindNoiseStrength() const { return WindNoiseStrength; }
+    float GetWindNoiseSpeed() const { return WindNoiseSpeed; }
+
     FRHIShaderResourceView* GetInstancePositionSRV() const { return InstancePositionSRV; }
     FRHIShaderResourceView* GetGrassData0SRV() const { return GrassData0SRV; }
     FRHIShaderResourceView* GetGrassData1SRV() const { return GrassData1SRV; }
@@ -56,6 +70,10 @@ private:
     uint32 LODLevel = 0;  // LOD 级别: 0 = LOD0 高质量, 1 = LOD1 简化版
     float CurvedNormalAmount = 0.5f;  // 弯曲法线程度
     float ViewRotationAmount = 0.3f;  // 视角依赖旋转强度 (0 = 无, 1 = 最大)
+    FTextureRHIRef WindNoiseTexture;
+    FVector2f WindNoiseScale = FVector2f(0.001f, 0.001f);
+    float WindNoiseStrength = 0.0f;
+    float WindNoiseSpeed = 0.0f;
 };
 
 /**
@@ -87,4 +105,11 @@ public:
     LAYOUT_FIELD(FShaderParameter, GrassLODLevel);  // LOD 级别参数
     LAYOUT_FIELD(FShaderParameter, GrassCurvedNormalAmount);  // 弯曲法线程度参数
     LAYOUT_FIELD(FShaderParameter, GrassViewRotationAmount);  // 视角依赖旋转强度参数
+    LAYOUT_FIELD(FShaderParameter, GrassWindDirection);
+    LAYOUT_FIELD(FShaderParameter, GrassWindStrength);
+    LAYOUT_FIELD(FShaderResourceParameter, GrassWindNoiseTexture);
+    LAYOUT_FIELD(FShaderResourceParameter, GrassWindNoiseSampler);
+    LAYOUT_FIELD(FShaderParameter, GrassWindNoiseScale);
+    LAYOUT_FIELD(FShaderParameter, GrassWindNoiseStrength);
+    LAYOUT_FIELD(FShaderParameter, GrassWindNoiseSpeed);
 };

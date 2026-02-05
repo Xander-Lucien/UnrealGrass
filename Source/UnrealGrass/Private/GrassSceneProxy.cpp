@@ -14,7 +14,7 @@
 #include "RenderGraphUtils.h"
 #include "RHICommandList.h"
 #include "RenderTargetPool.h"  // For GBlackTexture
-
+#include "Engine/Texture2D.h"
 
 // ============================================================================
 // GPU Frustum Culling Compute Shader (支持 LOD)
@@ -143,11 +143,21 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
 , Material(Component->GrassMaterial)
 {
     bVerifyUsedMaterials = false;
-    
+
     if (!Material)
     {
         Material = UMaterial::GetDefaultMaterial(MD_Surface);
     }
+
+    FTextureRHIRef WindNoiseTextureRHI;
+    if (Component->WindNoiseTexture && Component->WindNoiseTexture->GetResource())
+    {
+        WindNoiseTextureRHI = Component->WindNoiseTexture->GetResource()->TextureRHI;
+    }
+
+    const FVector2f WindNoiseScale = FVector2f(Component->WindNoiseScale.X, Component->WindNoiseScale.Y);
+    const float WindNoiseStrength = Component->WindNoiseStrength;
+    const float WindNoiseSpeed = Component->WindNoiseSpeed;
 
     // IMPORTANT: GPU Culling is not yet fully implemented
     // Always use PositionBufferSRV (all instances) for now
@@ -198,6 +208,7 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
     VertexFactory.SetCurvedNormalAmount(CurvedNormalAmount);
     // 设置视角依赖旋转强度 (对马岛之魂风格)
     VertexFactory.SetViewRotationAmount(ViewRotationAmount);
+    VertexFactory.SetWindNoiseParameters(WindNoiseTextureRHI, WindNoiseScale, WindNoiseStrength, WindNoiseSpeed);
 
     // 初始化 LOD 1 Mesh 数据 (7 顶点简化版)
     InitLOD1GrassBlade();
@@ -228,6 +239,7 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
     VertexFactoryLOD1.SetCurvedNormalAmount(CurvedNormalAmount);
     // 设置视角依赖旋转强度 (LOD 1 使用相同的值)
     VertexFactoryLOD1.SetViewRotationAmount(ViewRotationAmount);
+    VertexFactoryLOD1.SetWindNoiseParameters(WindNoiseTextureRHI, WindNoiseScale, WindNoiseStrength, WindNoiseSpeed);
 
     // 初始化渲染资源 (LOD 0)
     FStaticMeshVertexBuffers* VertexBuffersPtr = &VertexBuffers;
@@ -873,7 +885,6 @@ void FGrassSceneProxy::PerformGPUCulling(FRHICommandListImmediate& RHICmdList, c
     if (bLODFullyEnabled)
     {
         RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
-        // LOD 1 独立 Buffer 状态转换
         RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
         RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
         RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));

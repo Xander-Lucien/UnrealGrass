@@ -5,6 +5,8 @@
 #include "MeshMaterialShader.h"
 #include "MeshDrawShaderBindings.h"
 #include "ShaderParameterUtils.h"
+#include "SceneInterface.h"
+#include "RenderUtils.h"
 
 // ============================================================================
 // Vertex Factory 类型注册
@@ -68,6 +70,13 @@ void FGrassVertexFactoryShaderParameters::Bind(const FShaderParameterMap& Parame
     GrassLODLevel.Bind(ParameterMap, TEXT("GrassLODLevel"));
     GrassCurvedNormalAmount.Bind(ParameterMap, TEXT("GrassCurvedNormalAmount"));
     GrassViewRotationAmount.Bind(ParameterMap, TEXT("GrassViewRotationAmount"));
+    GrassWindDirection.Bind(ParameterMap, TEXT("GrassWindDirection"));
+    GrassWindStrength.Bind(ParameterMap, TEXT("GrassWindStrength"));
+    GrassWindNoiseTexture.Bind(ParameterMap, TEXT("GrassWindNoiseTexture"));
+    GrassWindNoiseSampler.Bind(ParameterMap, TEXT("GrassWindNoiseSampler"));
+    GrassWindNoiseScale.Bind(ParameterMap, TEXT("GrassWindNoiseScale"));
+    GrassWindNoiseStrength.Bind(ParameterMap, TEXT("GrassWindNoiseStrength"));
+    GrassWindNoiseSpeed.Bind(ParameterMap, TEXT("GrassWindNoiseSpeed"));
 }
 
 void FGrassVertexFactoryShaderParameters::GetElementShaderBindings(
@@ -137,6 +146,63 @@ void FGrassVertexFactoryShaderParameters::GetElementShaderBindings(
     if (GrassViewRotationAmount.IsBound())
     {
         ShaderBindings.Add(GrassViewRotationAmount, GrassVF->GetViewRotationAmount());
+    }
+
+    if (GrassWindDirection.IsBound() || GrassWindStrength.IsBound())
+    {
+        FVector WindDirection = FVector::ZeroVector;
+        float WindSpeed = 0.0f;
+        float WindMinGust = 0.0f;
+        float WindMaxGust = 0.0f;
+
+        if (Scene && View)
+        {
+            const FVector EvaluatePosition = View->ViewMatrices.GetViewOrigin();
+            Scene->GetWindParameters(EvaluatePosition, WindDirection, WindSpeed, WindMinGust, WindMaxGust);
+        }
+
+        const FVector SafeWindDirection = WindDirection.IsNearlyZero() ? FVector(1.0f, 0.0f, 0.0f) : WindDirection.GetSafeNormal();
+        const float WindStrength = WindSpeed + 0.5f * (WindMinGust + WindMaxGust);
+
+        if (GrassWindDirection.IsBound())
+        {
+            ShaderBindings.Add(GrassWindDirection, FVector3f(SafeWindDirection));
+        }
+
+        if (GrassWindStrength.IsBound())
+        {
+            ShaderBindings.Add(GrassWindStrength, WindStrength);
+        }
+    }
+
+    if (GrassWindNoiseTexture.IsBound())
+    {
+        FTextureRHIRef WindNoiseTexture = GrassVF->GetWindNoiseTexture();
+        if (!WindNoiseTexture.IsValid())
+        {
+            WindNoiseTexture = GWhiteTexture->TextureRHI;
+        }
+        ShaderBindings.Add(GrassWindNoiseTexture, WindNoiseTexture.GetReference());
+    }
+
+    if (GrassWindNoiseSampler.IsBound())
+    {
+        ShaderBindings.Add(GrassWindNoiseSampler, TStaticSamplerState<SF_Bilinear, AM_Wrap, AM_Wrap, AM_Wrap>::GetRHI());
+    }
+
+    if (GrassWindNoiseScale.IsBound())
+    {
+        ShaderBindings.Add(GrassWindNoiseScale, GrassVF->GetWindNoiseScale());
+    }
+
+    if (GrassWindNoiseStrength.IsBound())
+    {
+        ShaderBindings.Add(GrassWindNoiseStrength, GrassVF->GetWindNoiseStrength());
+    }
+
+    if (GrassWindNoiseSpeed.IsBound())
+    {
+        ShaderBindings.Add(GrassWindNoiseSpeed, GrassVF->GetWindNoiseSpeed());
     }
 }
 
