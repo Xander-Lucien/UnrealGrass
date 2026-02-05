@@ -112,6 +112,12 @@ struct FGrassRenderParameters
     /** 草叶法线弯曲程度，让草叶边缘的法线向外弯曲，产生更柔和的光照效果 (0=平面法线, 1=完全弯曲) */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "0.0", ClampMax = "1.0"))
     float CurvedNormalAmount = 0.5f;
+
+    /** 视角依赖旋转强度 (对马岛之魂风格)
+     *  当从侧面观看草叶时，草叶会轻微旋转朝向相机，让草地看起来更饱满
+     *  (0=无旋转, 1=完全旋转朝向相机) */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float ViewRotationAmount = 0.3f;
 };
 
 // ============================================================================

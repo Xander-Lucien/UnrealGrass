@@ -126,6 +126,7 @@ private:
 
     // ======== 草叶外观参数 ========
     float CurvedNormalAmount = 0.5f;  // 弯曲法线程度
+    float ViewRotationAmount = 0.3f;  // 视角依赖旋转强度 (对马岛之魂风格)
 
     // 标记当前帧是否已执行剔除
     mutable bool bCullingPerformedThisFrame = false;

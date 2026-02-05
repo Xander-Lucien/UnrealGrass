@@ -131,6 +131,7 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
 , bEnableLOD(Component->bEnableLOD)  // LOD 参数
 , LOD0Distance(Component->LOD0Distance)
 , CurvedNormalAmount(Component->RenderParameters.CurvedNormalAmount)  // 弯曲法线参数 (从 RenderParameters 获取)
+, ViewRotationAmount(Component->RenderParameters.ViewRotationAmount)  // 视角依赖旋转参数 (对马岛之魂风格)
 , Material(Component->GrassMaterial)
 {
     bVerifyUsedMaterials = false;
@@ -187,6 +188,8 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
     VertexFactory.SetLODLevel(0);
     // 设置弯曲法线程度
     VertexFactory.SetCurvedNormalAmount(CurvedNormalAmount);
+    // 设置视角依赖旋转强度 (对马岛之魂风格)
+    VertexFactory.SetViewRotationAmount(ViewRotationAmount);
 
     // 初始化 LOD 1 Mesh 数据 (7 顶点简化版)
     InitLOD1GrassBlade();
@@ -215,6 +218,8 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
     VertexFactoryLOD1.SetLODLevel(1);
     // 设置弯曲法线程度 (LOD 1 使用相同的值)
     VertexFactoryLOD1.SetCurvedNormalAmount(CurvedNormalAmount);
+    // 设置视角依赖旋转强度 (LOD 1 使用相同的值)
+    VertexFactoryLOD1.SetViewRotationAmount(ViewRotationAmount);
 
     // 初始化渲染资源 (LOD 0)
     FStaticMeshVertexBuffers* VertexBuffersPtr = &VertexBuffers;

@@ -33,6 +33,11 @@ public:
     void SetCurvedNormalAmount(float InAmount) { CurvedNormalAmount = InAmount; }
     float GetCurvedNormalAmount() const { return CurvedNormalAmount; }
 
+    // 设置视角依赖旋转强度 (对马岛之魂风格)
+    // 当从侧面观看草叶时，草叶会轻微旋转朝向相机，让草地看起来更饱满
+    void SetViewRotationAmount(float InAmount) { ViewRotationAmount = InAmount; }
+    float GetViewRotationAmount() const { return ViewRotationAmount; }
+
     FRHIShaderResourceView* GetInstancePositionSRV() const { return InstancePositionSRV; }
     FRHIShaderResourceView* GetGrassData0SRV() const { return GrassData0SRV; }
     FRHIShaderResourceView* GetGrassData1SRV() const { return GrassData1SRV; }
@@ -50,6 +55,7 @@ private:
     uint32 NumInstances = 0;
     uint32 LODLevel = 0;  // LOD 级别: 0 = LOD0 高质量, 1 = LOD1 简化版
     float CurvedNormalAmount = 0.5f;  // 弯曲法线程度
+    float ViewRotationAmount = 0.3f;  // 视角依赖旋转强度 (0 = 无, 1 = 最大)
 };
 
 /**
@@ -80,4 +86,5 @@ public:
     LAYOUT_FIELD(FShaderResourceParameter, GrassData2Buffer);  // P2Offset
     LAYOUT_FIELD(FShaderParameter, GrassLODLevel);  // LOD 级别参数
     LAYOUT_FIELD(FShaderParameter, GrassCurvedNormalAmount);  // 弯曲法线程度参数
+    LAYOUT_FIELD(FShaderParameter, GrassViewRotationAmount);  // 视角依赖旋转强度参数
 };

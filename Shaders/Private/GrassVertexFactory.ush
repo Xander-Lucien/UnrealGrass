@@ -21,6 +21,12 @@ uint GrassLODLevel;
 // 用于让草叶边缘的法线向外弯曲，产生更柔和的光照效果
 float GrassCurvedNormalAmount;
 
+// 视角依赖旋转强度 (0 = 无旋转, 1 = 完全旋转朝向相机)
+// 当从侧面观看草叶时，草叶会轻微旋转使其正面更多地朝向相机
+// 这个技术来自《对马岛之魂》，可以让草地看起来更饱满
+// 注意：值过大(>0.5)反而会让草地变薄，推荐值为 0.2 ~ 0.4
+float GrassViewRotationAmount;
+
 // ============================================================================
 // Bezier Curve Functions
 // ============================================================================
@@ -244,8 +250,43 @@ FGrassDeformResult GetDeformedGrassPositionAndNormal(float3 LocalPos, uint Insta
         UpTangent = float3(0, 0, 1);
     }
     
-    // Width direction (perpendicular to facing direction in XY plane)
-    float3 WidthDir = float3(-FacingDir.y, FacingDir.x, 0);
+    // ========== 视角依赖旋转 (Ghost of Tsushima 风格) ==========
+    // 当从侧面观看草叶时，让草叶轻微旋转朝向相机，使草地看起来更饱满
+    float2 AdjustedFacingDir = FacingDir;
+    
+    // 计算从草叶位置指向相机的方向 (在世界空间 XY 平面上)
+    float3 WorldPos = InstancePos + CurvePos; // 草叶当前位置的近似值
+    // 注意: ResolvedView.WorldCameraOrigin 是 FDFVector3 类型 (双精度)
+    // 使用 DFHackToFloat 将其转换为 float3
+    float3 CameraWorldPos = DFHackToFloat(ResolvedView.WorldCameraOrigin);
+    float3 ToCamera = CameraWorldPos - WorldPos;
+    float2 ToCameraXY = normalize(ToCamera.xy);
+    
+    // 计算草叶朝向与相机方向的点积
+    // 当点积接近 0 时，说明相机在草叶的侧面
+    float DotWithCamera = dot(FacingDir, ToCameraXY);
+    
+    // 计算需要旋转的方向
+    // 叉积的符号决定了应该向哪个方向旋转
+    float CrossSign = sign(FacingDir.x * ToCameraXY.y - FacingDir.y * ToCameraXY.x);
+    
+    // 计算旋转量：当从侧面观看时旋转最大，正面或背面观看时不旋转
+    // 使用 1 - abs(DotWithCamera) 来获取侧面程度
+    float SideFactor = 1.0 - abs(DotWithCamera);
+    float RotationAmount = SideFactor * GrassViewRotationAmount * CrossSign;
+    
+    // 使用 2D 旋转矩阵旋转朝向
+    // 旋转角度较小时可以用近似: cos(a) ≈ 1, sin(a) ≈ a
+    // 但为了更准确，我们使用实际的旋转
+    float RotAngle = RotationAmount * 0.5; // 最大旋转约 28 度 (0.5 弧度)
+    float CosRot = cos(RotAngle);
+    float SinRot = sin(RotAngle);
+    AdjustedFacingDir.x = FacingDir.x * CosRot - FacingDir.y * SinRot;
+    AdjustedFacingDir.y = FacingDir.x * SinRot + FacingDir.y * CosRot;
+    AdjustedFacingDir = normalize(AdjustedFacingDir);
+    
+    // Width direction (perpendicular to adjusted facing direction in XY plane)
+    float3 WidthDir = float3(-AdjustedFacingDir.y, AdjustedFacingDir.x, 0);
     float WidthDirLen = length(WidthDir);
     if (WidthDirLen > 0.001)
     {
@@ -258,6 +299,7 @@ FGrassDeformResult GetDeformedGrassPositionAndNormal(float3 LocalPos, uint Insta
     
     // Calculate normal: perpendicular to both width direction and up tangent
     // Normal points away from the blade surface (front face)
+    // 使用调整后的朝向来计算法线
     float3 BladeNormal = cross(WidthDir, UpTangent);
     float NormalLen = length(BladeNormal);
     if (NormalLen > 0.001)
@@ -266,8 +308,8 @@ FGrassDeformResult GetDeformedGrassPositionAndNormal(float3 LocalPos, uint Insta
     }
     else
     {
-        // Fallback: use facing direction as normal
-        BladeNormal = float3(FacingDir.x, FacingDir.y, 0);
+        // Fallback: use adjusted facing direction as normal
+        BladeNormal = float3(AdjustedFacingDir.x, AdjustedFacingDir.y, 0);
     }
     
     // 应用弯曲法线效果
