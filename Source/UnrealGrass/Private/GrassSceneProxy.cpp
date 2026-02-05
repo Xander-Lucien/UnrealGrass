@@ -13,6 +13,7 @@
 #include "ShaderParameterStruct.h"
 #include "RenderGraphUtils.h"
 #include "RHICommandList.h"
+#include "RenderTargetPool.h"  // For GBlackTexture
 
 
 // ============================================================================
@@ -48,6 +49,12 @@ public:
         SHADER_PARAMETER(float, MaxVisibleDistance)
         SHADER_PARAMETER(float, LOD0Distance)  // LOD 切换距离
         SHADER_PARAMETER(FVector3f, CameraPosition)
+        // Hi-Z 遮挡剔除参数
+        SHADER_PARAMETER_TEXTURE(Texture2D, HiZTexture)
+        SHADER_PARAMETER_SAMPLER(SamplerState, HiZSampler)
+        SHADER_PARAMETER(uint32, bEnableOcclusionCulling)
+        SHADER_PARAMETER(FVector2f, HiZSize)
+        SHADER_PARAMETER(FMatrix44f, ViewProjectionMatrix)
     END_SHADER_PARAMETER_STRUCT()
 
     static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -126,6 +133,7 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
 , VisibleGrassData2BufferLOD1UAV(Component->VisibleGrassData2BufferLOD1UAV)
 , bEnableFrustumCulling(Component->bEnableFrustumCulling)
 , bEnableDistanceCulling(Component->bEnableDistanceCulling)
+, bEnableOcclusionCulling(Component->bEnableOcclusionCulling)
 , MaxVisibleDistance(Component->MaxVisibleDistance)
 , GrassBoundingRadius(Component->GrassBoundingRadius)
 , bEnableLOD(Component->bEnableLOD)  // LOD 参数
@@ -866,6 +874,193 @@ void FGrassSceneProxy::PerformGPUCulling(FRHICommandListImmediate& RHICmdList, c
     {
         RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
         // LOD 1 独立 Buffer 状态转换
+        RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+    }
+}
+
+void FGrassSceneProxy::PerformGPUCullingWithHiZ(
+    FRHICommandListImmediate& RHICmdList,
+    const FSceneView* View,
+    FRHITexture* HiZTexture,
+    FIntPoint HiZSize,
+    const FMatrix& HiZViewProjectionMatrix) const
+{
+    if (!bEnableFrustumCulling || !VisiblePositionBufferUAV.IsValid() || !IndirectArgsBufferUAV.IsValid())
+    {
+        return;
+    }
+
+    // 避免同一帧重复执行
+    uint32 CurrentFrameNumber = GFrameNumber;
+    if (bCullingPerformedThisFrame && LastFrameNumber == CurrentFrameNumber)
+    {
+        return;
+    }
+    bCullingPerformedThisFrame = true;
+    LastFrameNumber = CurrentFrameNumber;
+
+    // 检查 LOD 功能是否完全可用
+    const bool bLODFullyEnabled = bEnableLOD && 
+        IndirectArgsBufferLOD1.IsValid() && 
+        IndirectArgsBufferLOD1UAV.IsValid() &&
+        VisiblePositionBufferLOD1.IsValid() &&
+        VisiblePositionBufferLOD1UAV.IsValid();
+
+    // ========== Step 1: 重置 Indirect Args Buffer ==========
+    {
+        RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBuffer, ERHIAccess::IndirectArgs, ERHIAccess::UAVCompute));
+        if (bLODFullyEnabled)
+        {
+            RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBufferLOD1, ERHIAccess::IndirectArgs, ERHIAccess::UAVCompute));
+        }
+
+        TShaderMapRef<FGrassResetIndirectArgsCS> ResetCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+        FGrassResetIndirectArgsCS::FParameters ResetParams;
+        ResetParams.OutIndirectArgs = IndirectArgsBufferUAV;
+        ResetParams.OutIndirectArgsLOD1 = bLODFullyEnabled ? IndirectArgsBufferLOD1UAV : IndirectArgsBufferUAV;
+        ResetParams.IndexCountPerInstance = NumIndices;
+        ResetParams.IndexCountPerInstanceLOD1 = bLODFullyEnabled ? NumIndicesLOD1 : NumIndices;
+        ResetParams.TotalInstanceCount = TotalInstanceCount;
+        
+        FComputeShaderUtils::Dispatch(RHICmdList, ResetCS, ResetParams, FIntVector(1, 1, 1));
+    }
+
+    // ========== Step 2: 执行 Frustum + Hi-Z Occlusion Culling ==========
+    {
+        RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBuffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+        RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2Buffer, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+        
+        if (bLODFullyEnabled)
+        {
+            RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBufferLOD1, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+            RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0BufferLOD1, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+            RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1BufferLOD1, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+            RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2BufferLOD1, ERHIAccess::SRVMask, ERHIAccess::UAVCompute));
+        }
+
+        TShaderMapRef<FGrassFrustumCullingCS> CullingCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+        FGrassFrustumCullingCS::FParameters CullingParams;
+        
+        // Input buffers
+        CullingParams.InPositions = PositionBufferSRV;
+        CullingParams.InGrassData0 = GrassData0SRV;
+        CullingParams.InGrassData1 = GrassData1SRV;
+        CullingParams.InGrassData2 = GrassData2SRV;
+        
+        // Output buffers (LOD 0)
+        CullingParams.OutVisiblePositions = VisiblePositionBufferUAV;
+        CullingParams.OutVisibleGrassData0 = VisibleGrassData0UAV;
+        CullingParams.OutVisibleGrassData1 = VisibleGrassData1UAV;
+        CullingParams.OutVisibleGrassData2 = VisibleGrassData2UAV;
+        
+        // Output buffers (LOD 1)
+        CullingParams.OutVisiblePositionsLOD1 = bLODFullyEnabled ? VisiblePositionBufferLOD1UAV : VisiblePositionBufferUAV;
+        CullingParams.OutVisibleGrassData0LOD1 = bLODFullyEnabled ? VisibleGrassData0BufferLOD1UAV : VisibleGrassData0UAV;
+        CullingParams.OutVisibleGrassData1LOD1 = bLODFullyEnabled ? VisibleGrassData1BufferLOD1UAV : VisibleGrassData1UAV;
+        CullingParams.OutVisibleGrassData2LOD1 = bLODFullyEnabled ? VisibleGrassData2BufferLOD1UAV : VisibleGrassData2UAV;
+        
+        CullingParams.OutIndirectArgs = IndirectArgsBufferUAV;
+        CullingParams.OutIndirectArgsLOD1 = bLODFullyEnabled ? IndirectArgsBufferLOD1UAV : IndirectArgsBufferUAV;
+        
+        // Instance params
+        CullingParams.TotalInstanceCount = TotalInstanceCount;
+        CullingParams.IndexCountPerInstance = NumIndices;
+        CullingParams.IndexCountPerInstanceLOD1 = bLODFullyEnabled ? NumIndicesLOD1 : NumIndices;
+        CullingParams.LOD0Distance = bLODFullyEnabled ? LOD0Distance : 0.0f;
+        
+        // 提取视锥平面
+        const FMatrix ViewProjectionMatrix = View->ViewMatrices.GetViewProjectionMatrix();
+        FPlane FrustumPlanes[6];
+        
+        // Left
+        FrustumPlanes[0] = FPlane(
+            ViewProjectionMatrix.M[0][3] + ViewProjectionMatrix.M[0][0],
+            ViewProjectionMatrix.M[1][3] + ViewProjectionMatrix.M[1][0],
+            ViewProjectionMatrix.M[2][3] + ViewProjectionMatrix.M[2][0],
+            ViewProjectionMatrix.M[3][3] + ViewProjectionMatrix.M[3][0]);
+        // Right
+        FrustumPlanes[1] = FPlane(
+            ViewProjectionMatrix.M[0][3] - ViewProjectionMatrix.M[0][0],
+            ViewProjectionMatrix.M[1][3] - ViewProjectionMatrix.M[1][0],
+            ViewProjectionMatrix.M[2][3] - ViewProjectionMatrix.M[2][0],
+            ViewProjectionMatrix.M[3][3] - ViewProjectionMatrix.M[3][0]);
+        // Bottom
+        FrustumPlanes[2] = FPlane(
+            ViewProjectionMatrix.M[0][3] + ViewProjectionMatrix.M[0][1],
+            ViewProjectionMatrix.M[1][3] + ViewProjectionMatrix.M[1][1],
+            ViewProjectionMatrix.M[2][3] + ViewProjectionMatrix.M[2][1],
+            ViewProjectionMatrix.M[3][3] + ViewProjectionMatrix.M[3][1]);
+        // Top
+        FrustumPlanes[3] = FPlane(
+            ViewProjectionMatrix.M[0][3] - ViewProjectionMatrix.M[0][1],
+            ViewProjectionMatrix.M[1][3] - ViewProjectionMatrix.M[1][1],
+            ViewProjectionMatrix.M[2][3] - ViewProjectionMatrix.M[2][1],
+            ViewProjectionMatrix.M[3][3] - ViewProjectionMatrix.M[3][1]);
+        // Near
+        FrustumPlanes[4] = FPlane(
+            ViewProjectionMatrix.M[0][2],
+            ViewProjectionMatrix.M[1][2],
+            ViewProjectionMatrix.M[2][2],
+            ViewProjectionMatrix.M[3][2]);
+        // Far
+        FrustumPlanes[5] = FPlane(
+            ViewProjectionMatrix.M[0][3] - ViewProjectionMatrix.M[0][2],
+            ViewProjectionMatrix.M[1][3] - ViewProjectionMatrix.M[1][2],
+            ViewProjectionMatrix.M[2][3] - ViewProjectionMatrix.M[2][2],
+            ViewProjectionMatrix.M[3][3] - ViewProjectionMatrix.M[3][2]);
+
+        // 归一化平面
+        for (int i = 0; i < 6; i++)
+        {
+            float Length = FMath::Sqrt(
+                FrustumPlanes[i].X * FrustumPlanes[i].X + 
+                FrustumPlanes[i].Y * FrustumPlanes[i].Y + 
+                FrustumPlanes[i].Z * FrustumPlanes[i].Z);
+            if (Length > SMALL_NUMBER)
+            {
+                FrustumPlanes[i].X /= Length;
+                FrustumPlanes[i].Y /= Length;
+                FrustumPlanes[i].Z /= Length;
+                FrustumPlanes[i].W /= Length;
+            }
+            CullingParams.FrustumPlanes[i] = FVector4f(
+                FrustumPlanes[i].X, FrustumPlanes[i].Y, FrustumPlanes[i].Z, FrustumPlanes[i].W);
+        }
+        
+        CullingParams.LocalToWorld = FMatrix44f(GetLocalToWorld());
+        CullingParams.BoundingRadius = GrassBoundingRadius;
+        CullingParams.MaxVisibleDistance = bEnableDistanceCulling ? MaxVisibleDistance : 0.0f;
+        CullingParams.CameraPosition = FVector3f(View->ViewMatrices.GetViewOrigin());
+        
+        // ========== Hi-Z 遮挡剔除参数 ==========
+        const bool bUseHiZ = bEnableOcclusionCulling && HiZTexture != nullptr && HiZSize.X > 0 && HiZSize.Y > 0;
+        
+        CullingParams.bEnableOcclusionCulling = bUseHiZ ? 1 : 0;
+        CullingParams.HiZTexture = bUseHiZ ? HiZTexture : GBlackTexture->TextureRHI.GetReference();
+        CullingParams.HiZSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+        CullingParams.HiZSize = bUseHiZ ? FVector2f(HiZSize.X, HiZSize.Y) : FVector2f(1.0f, 1.0f);
+        // 使用上一帧的 ViewProjectionMatrix 进行遮挡测试（因为 Hi-Z 是上一帧生成的）
+        CullingParams.ViewProjectionMatrix = FMatrix44f(HiZViewProjectionMatrix);
+
+        // Dispatch
+        int32 NumGroups = FMath::DivideAndRoundUp((int32)TotalInstanceCount, 64);
+        FComputeShaderUtils::Dispatch(RHICmdList, CullingCS, CullingParams, FIntVector(NumGroups, 1, 1));
+    }
+
+    // ========== Step 3: 转换资源状态 ==========
+    RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+    RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+    RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+    RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData2Buffer, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
+    RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBuffer, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
+    if (bLODFullyEnabled)
+    {
+        RHICmdList.Transition(FRHITransitionInfo(IndirectArgsBufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
         RHICmdList.Transition(FRHITransitionInfo(VisiblePositionBufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
         RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData0BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
         RHICmdList.Transition(FRHITransitionInfo(VisibleGrassData1BufferLOD1, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));

@@ -180,7 +180,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     );
     UV = saturate(UV);
     
-    // ========== 从 Voronoi Texture 采样获取最近 Clump (O(1) 复杂度！) ==========
+    // ========== 从 Voronoi Texture 采样获取最近 Clump ==========
     float4 VoronoiData = InVoronoiTexture.SampleLevel(InVoronoiTextureSampler, UV, 0);
     
     // 解析 Voronoi 数据

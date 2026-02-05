@@ -1,5 +1,5 @@
 // GrassFrustumCulling.usf
-// GPU Frustum Culling Compute Shader with LOD Support
+// GPU Frustum Culling Compute Shader with LOD Support and Hi-Z Occlusion Culling
 
 #include "/Engine/Private/Common.ush"
 
@@ -54,6 +54,56 @@ float LOD0Distance;       // LOD 0 到 LOD 1 的切换距离 (<=0 表示禁用 L
 float3 CameraPosition;
 
 // ============================================================================
+// Hi-Z Occlusion Culling Parameters
+// ============================================================================
+Texture2D<float> HiZTexture;
+SamplerState HiZSampler;
+uint bEnableOcclusionCulling;  // 是否启用遮挡剔除
+float2 HiZSize;                // Hi-Z 纹理尺寸 (Mip 0)
+float4x4 ViewProjectionMatrix; // 视图投影矩阵 (用于将世界坐标投影到屏幕空间)
+
+// ============================================================================
+// Hi-Z Occlusion Test Function
+// 测试一个世界空间点是否被遮挡
+// 返回 true 表示可见，false 表示被遮挡
+// ============================================================================
+bool IsVisibleHiZ(float3 WorldPos, float Radius)
+{
+    // 将世界坐标投影到裁剪空间
+    float4 ClipPos = mul(float4(WorldPos, 1.0f), ViewProjectionMatrix);
+    
+    // 透视除法
+    float3 NDC = ClipPos.xyz / ClipPos.w;
+    
+    // 检查是否在 NDC 范围外（已经被视锥剔除处理，这里做额外保护）
+    if (any(abs(NDC.xy) > 1.0f) || NDC.z < 0.0f || NDC.z > 1.0f)
+    {
+        return true;  // 认为可见，让视锥剔除来处理
+    }
+    
+    // NDC -> UV 空间 (Y 翻转)
+    // NDC: X[-1,1] -> UV[0,1], Y[-1,1] -> UV[1,0]
+    float2 ScreenUV = NDC.xy * float2(0.5f, -0.5f) + 0.5f;
+    
+    // 计算草叶在屏幕空间的大致像素覆盖范围
+    // 根据距离和包围半径估算屏幕空间大小
+    float ScreenRadius = Radius * HiZSize.x / (ClipPos.w * 2.0f);  // 粗略估算
+    
+    // 选择合适的 Mip 级别 (基于屏幕空间大小)
+    // 每提升一级 Mip，覆盖范围翻倍
+    float MipLevel = clamp(log2(max(ScreenRadius, 1.0f)), 0.0f, 7.0f);
+    
+    // 采样 Hi-Z 深度
+    float HiZDepth = HiZTexture.SampleLevel(HiZSampler, ScreenUV, MipLevel).r;
+    
+    // 反向 Z: 物体深度 >= HiZ深度 则可见
+    // 添加小偏移避免自遮挡问题
+    float ObjectDepth = NDC.z;
+    
+    return ObjectDepth >= HiZDepth - 0.0001f;
+}
+
+// ============================================================================
 // Main Culling Compute Shader with LOD
 // ============================================================================
 
@@ -100,6 +150,23 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     {
         float MaxDistSq = MaxVisibleDistance * MaxVisibleDistance;
         bVisible = (DistSq <= MaxDistSq);
+    }
+    
+    // ========== Hi-Z Occlusion Culling ==========
+    if (bVisible && bEnableOcclusionCulling > 0)
+    {
+        // 获取草叶高度用于计算包围盒顶部位置
+        float4 GrassData = InGrassData0[InstanceIndex];
+        float GrassHeight = GrassData.x;  // Height
+        
+        // 测试草叶根部和顶部两个点
+        // 只要有一个点可见就认为整个草叶可见
+        float3 WorldPosTop = WorldPos + float3(0, 0, GrassHeight);
+        
+        bool bRootVisible = IsVisibleHiZ(WorldPos, BoundingRadius);
+        bool bTopVisible = IsVisibleHiZ(WorldPosTop, BoundingRadius);
+        
+        bVisible = bRootVisible || bTopVisible;
     }
     
     // If visible, determine LOD level and write to appropriate buffer

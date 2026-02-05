@@ -27,6 +27,14 @@ public:
     /** 执行 GPU Frustum Culling (必须在渲染线程调用) */
     void PerformGPUCulling(FRHICommandListImmediate& RHICmdList, const FSceneView* View) const;
 
+    /** 执行带 Hi-Z 遮挡剔除的 GPU Culling */
+    void PerformGPUCullingWithHiZ(
+        FRHICommandListImmediate& RHICmdList,
+        const FSceneView* View,
+        FRHITexture* HiZTexture,
+        FIntPoint HiZSize,
+        const FMatrix& HiZViewProjectionMatrix) const;
+
     /** 在渲染线程上执行 GPU Frustum Culling (使用预提取的数据) */
     void PerformGPUCullingRenderThread(FRHICommandListImmediate& RHICmdList, const FMatrix& ViewProjectionMatrix, const FVector& ViewOrigin, const FMatrix& LocalToWorldMatrix) const;
 
@@ -117,6 +125,7 @@ private:
     // ======== GPU Culling 参数 ========
     bool bEnableFrustumCulling = false;
     bool bEnableDistanceCulling = false;
+    bool bEnableOcclusionCulling = false;  // Hi-Z 遮挡剔除
     float MaxVisibleDistance = 10000.0f;
     float GrassBoundingRadius = 50.0f;
 

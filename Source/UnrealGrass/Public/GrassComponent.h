@@ -162,6 +162,10 @@ public:
     UPROPERTY(EditAnywhere, Category = "Grass|Culling", meta = (ClampMin = "1.0"))
     float GrassBoundingRadius = 50.0f;
 
+    /** 是否启用 Hi-Z 遮挡剔除（需要 GPU Culling 开启）*/
+    UPROPERTY(EditAnywhere, Category = "Grass|Culling")
+    bool bEnableOcclusionCulling = true;
+
     // ======== LOD 设置 ========
     
     /** 是否启用 LOD 系统 */

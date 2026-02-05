@@ -1,0 +1,179 @@
+// GrassHiZBuild.usf
+// 草地 Hi-Z (Hierarchical Z-Buffer) 生成 Compute Shader
+// 用于生成遮挡剔除所需的深度金字塔
+
+#include "/Engine/Private/Common.ush"
+
+// ============================================================================
+// Hi-Z 生成参数
+// ============================================================================
+
+// 源深度纹理（上一帧的 Scene Depth 或 Mip 0）
+Texture2D<float> SrcDepthTexture;
+SamplerState SrcDepthSampler;
+
+// 输出 Hi-Z Mip 级别
+RWTexture2D<float> DstHiZMip0;  // 原始分辨率 / 2
+RWTexture2D<float> DstHiZMip1;
+RWTexture2D<float> DstHiZMip2;
+RWTexture2D<float> DstHiZMip3;
+RWTexture2D<float> DstHiZMip4;
+
+// 尺寸参数
+uint2 SrcSize;        // 源深度纹理尺寸
+uint2 DstSize;        // 目标 Mip 0 尺寸
+float2 InvSrcSize;    // 1.0 / SrcSize
+
+// LDS 共享内存用于 Mip Chain 生成
+groupshared float SharedDepth[8][8];
+
+// ============================================================================
+// Hi-Z Mip 0 生成 (从 Scene Depth 降采样)
+// 取 2x2 区域的最小深度 (最远的深度，因为 UE 使用反向 Z)
+// ============================================================================
+[numthreads(8, 8, 1)]
+void BuildHiZMip0CS(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupThreadId : SV_GroupThreadID)
+{
+    // 计算采样位置 (每个线程处理 2x2 像素)
+    uint2 SrcPixel = DispatchThreadId.xy * 2;
+    
+    if (SrcPixel.x >= SrcSize.x || SrcPixel.y >= SrcSize.y)
+    {
+        return;
+    }
+    
+    // 采样 2x2 区域的深度
+    // 使用 Load 而非 Sample 以获得精确像素值
+    float4 Depths;
+    Depths.x = SrcDepthTexture.Load(int3(min(SrcPixel + uint2(0, 0), SrcSize - 1), 0)).r;
+    Depths.y = SrcDepthTexture.Load(int3(min(SrcPixel + uint2(1, 0), SrcSize - 1), 0)).r;
+    Depths.z = SrcDepthTexture.Load(int3(min(SrcPixel + uint2(0, 1), SrcSize - 1), 0)).r;
+    Depths.w = SrcDepthTexture.Load(int3(min(SrcPixel + uint2(1, 1), SrcSize - 1), 0)).r;
+    
+    // 取最小深度 (反向 Z，最小值 = 最远)
+    float MinDepth = min(min(Depths.x, Depths.y), min(Depths.z, Depths.w));
+    
+    // 写入 Mip 0
+    if (DispatchThreadId.x < DstSize.x && DispatchThreadId.y < DstSize.y)
+    {
+        DstHiZMip0[DispatchThreadId.xy] = MinDepth;
+    }
+}
+
+// ============================================================================
+// Hi-Z Mip Chain 生成 (一次生成 4 级 Mip)
+// 使用 LDS 进行高效的层级降采样
+// ============================================================================
+[numthreads(8, 8, 1)]
+void BuildHiZMipChainCS(
+    uint3 DispatchThreadId : SV_DispatchThreadID,
+    uint3 GroupThreadId : SV_GroupThreadID,
+    uint GroupIndex : SV_GroupIndex)
+{
+    // Mip 0 -> Mip 1 (8x8 -> 4x4 per group)
+    uint2 SrcPixel = DispatchThreadId.xy;
+    
+    // 读取 Mip 0 的深度值
+    float Depth = 1.0f;  // 默认最远
+    if (SrcPixel.x < DstSize.x && SrcPixel.y < DstSize.y)
+    {
+        Depth = DstHiZMip0[SrcPixel].r;
+    }
+    
+    // 存入 LDS
+    SharedDepth[GroupThreadId.y][GroupThreadId.x] = Depth;
+    GroupMemoryBarrierWithGroupSync();
+    
+    // -------- Mip 1 (4x4 线程写入) --------
+    if ((GroupThreadId.x & 1) == 0 && (GroupThreadId.y & 1) == 0)
+    {
+        float4 Depths;
+        Depths.x = SharedDepth[GroupThreadId.y    ][GroupThreadId.x    ];
+        Depths.y = SharedDepth[GroupThreadId.y    ][GroupThreadId.x + 1];
+        Depths.z = SharedDepth[GroupThreadId.y + 1][GroupThreadId.x    ];
+        Depths.w = SharedDepth[GroupThreadId.y + 1][GroupThreadId.x + 1];
+        
+        float MinDepth = min(min(Depths.x, Depths.y), min(Depths.z, Depths.w));
+        
+        uint2 OutPixel = DispatchThreadId.xy >> 1;
+        uint2 Mip1Size = DstSize >> 1;
+        if (OutPixel.x < Mip1Size.x && OutPixel.y < Mip1Size.y)
+        {
+            DstHiZMip1[OutPixel] = MinDepth;
+        }
+        
+        // 更新 LDS 为下一级
+        SharedDepth[GroupThreadId.y >> 1][GroupThreadId.x >> 1] = MinDepth;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    
+    // -------- Mip 2 (2x2 线程写入) --------
+    if ((GroupThreadId.x & 3) == 0 && (GroupThreadId.y & 3) == 0)
+    {
+        uint2 LDSCoord = GroupThreadId.xy >> 1;
+        float4 Depths;
+        Depths.x = SharedDepth[LDSCoord.y    ][LDSCoord.x    ];
+        Depths.y = SharedDepth[LDSCoord.y    ][LDSCoord.x + 1];
+        Depths.z = SharedDepth[LDSCoord.y + 1][LDSCoord.x    ];
+        Depths.w = SharedDepth[LDSCoord.y + 1][LDSCoord.x + 1];
+        
+        float MinDepth = min(min(Depths.x, Depths.y), min(Depths.z, Depths.w));
+        
+        uint2 OutPixel = DispatchThreadId.xy >> 2;
+        uint2 Mip2Size = DstSize >> 2;
+        if (OutPixel.x < Mip2Size.x && OutPixel.y < Mip2Size.y)
+        {
+            DstHiZMip2[OutPixel] = MinDepth;
+        }
+        
+        SharedDepth[LDSCoord.y >> 1][LDSCoord.x >> 1] = MinDepth;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    
+    // -------- Mip 3 (1 线程写入) --------
+    if (GroupThreadId.x == 0 && GroupThreadId.y == 0)
+    {
+        float4 Depths;
+        Depths.x = SharedDepth[0][0];
+        Depths.y = SharedDepth[0][1];
+        Depths.z = SharedDepth[1][0];
+        Depths.w = SharedDepth[1][1];
+        
+        float MinDepth = min(min(Depths.x, Depths.y), min(Depths.z, Depths.w));
+        
+        uint2 OutPixel = DispatchThreadId.xy >> 3;
+        uint2 Mip3Size = DstSize >> 3;
+        if (OutPixel.x < Mip3Size.x && OutPixel.y < Mip3Size.y)
+        {
+            DstHiZMip3[OutPixel] = MinDepth;
+        }
+    }
+}
+
+// ============================================================================
+// 单独的 Mip 降采样 Shader (用于生成更高级别的 Mip)
+// ============================================================================
+Texture2D<float> SrcMipTexture;
+uint2 SrcMipSize;
+uint2 DstMipSize;
+
+[numthreads(8, 8, 1)]
+void DownsampleMipCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    if (DispatchThreadId.x >= DstMipSize.x || DispatchThreadId.y >= DstMipSize.y)
+    {
+        return;
+    }
+    
+    uint2 SrcPixel = DispatchThreadId.xy * 2;
+    
+    float4 Depths;
+    Depths.x = SrcMipTexture.Load(int3(min(SrcPixel + uint2(0, 0), SrcMipSize - 1), 0)).r;
+    Depths.y = SrcMipTexture.Load(int3(min(SrcPixel + uint2(1, 0), SrcMipSize - 1), 0)).r;
+    Depths.z = SrcMipTexture.Load(int3(min(SrcPixel + uint2(0, 1), SrcMipSize - 1), 0)).r;
+    Depths.w = SrcMipTexture.Load(int3(min(SrcPixel + uint2(1, 1), SrcMipSize - 1), 0)).r;
+    
+    float MinDepth = min(min(Depths.x, Depths.y), min(Depths.z, Depths.w));
+    
+    DstHiZMip0[DispatchThreadId.xy] = MinDepth;
+}
