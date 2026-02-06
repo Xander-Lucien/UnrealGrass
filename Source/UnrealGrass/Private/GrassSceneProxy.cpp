@@ -1152,13 +1152,9 @@ FPrimitiveViewRelevance FGrassSceneProxy::GetViewRelevance(const FSceneView* Vie
     Result.bRenderCustomDepth = ShouldRenderCustomDepth();
     Result.bUsesLightingChannels = GetLightingChannelMask() != GetDefaultLightingChannelMask();
     Result.bTranslucentSelfShadow = bCastVolumetricTranslucentShadow;
-    Result.bVelocityRelevance = DrawsVelocity() && Result.bOpaque && Result.bRenderInMainPass;
     
     // 启用动态光照
     Result.bDynamicRelevance = true;
-    
-    // 支持带半透明动态光照（允许混合）
-    Result.bSeparateTranslucencyPassRelevance = true;
     
     // 支持光照贴图
     Result.bStaticRelevance = false; // 不使用静态光照
@@ -1169,67 +1165,24 @@ FPrimitiveViewRelevance FGrassSceneProxy::GetViewRelevance(const FSceneView* Vie
     // 设置材质相关标志
     Result.bUsesSingleLayerWaterMaterial = false;
     
-    // 为远处草叶添加淡出效果
-    // 计算从相机到草叶包围盒中心的距离
-    FVector CameraLocation = View->ViewLocation;
-    FVector BoundsCenter = GetBounds().Origin;
-    float DistanceSq = FVector::DistSquared(CameraLocation, BoundsCenter);
+    // 草叶渲染为不透明物体
+    // 远处的淡出效果应该通过材质中的 Dithered Opacity 或距离剔除来实现
+    // 而不是通过切换到透明渲染（透明渲染会带来排序问题和性能开销）
+    Result.bOpaque = true;
     
-    // 设置极远距离淡出参数
-    // 超过4000cm时开始淡出，完全淡出在5000cm
-    const float FadeStartDistanceSq = 4000.0f * 4000.0f; // 40米
-    const float FadeEndDistanceSq = 5000.0f * 5000.0f;   // 50米
-    
-    // 计算透明度因子
-    float AlphaFactor = 1.0f;
-    if (DistanceSq > FadeStartDistanceSq)
-    {
-        AlphaFactor = FMath::Clamp((FadeEndDistanceSq - DistanceSq) / (FadeEndDistanceSq - FadeStartDistanceSq), 0.0f, 1.0f);
-    }
-    
-    // 如果Alpha很低，设置透明渲染标志
-    if (AlphaFactor < 1.0f)
-    {
-        Result.bTranslucentRelevance = true;
-        Result.bNormalTranslucencyRelevance = true;
-        Result.bSeparateTranslucencyRelevance = true;
-    }
-    else
-    {
-        // 正常情况下的渲染标志
-        Result.bOpaqueRelevance = true;
-    }
-    
-    // 支持实例化渲染
-    Result.bUsesInstancing = true;
+    // 更新 bVelocityRelevance（需要在设置 bOpaque 之后）
+    Result.bVelocityRelevance = DrawsVelocity() && Result.bOpaque && Result.bRenderInMainPass;
     
     return Result;
 }
 
-// 修改CalculateDistanceAttenuation函数，添加对极远距离的淡出支持
-void FGrassSceneProxy::CalculateDistanceAttenuation(float DistanceSq, float& LODAtten, float& FadeAtten) const
-{
-    // LOD衰减：在LOD0距离处从1衰减到0.5，用于决定使用LOD0还是LOD1
-    float LOD0DistSq = LOD0Distance * LOD0Distance;
-    LODAtten = FMath::Clamp((LOD0DistSq - DistanceSq) / (LOD0DistSq * 0.1f) + 0.5f, 0.5f, 1.0f);
-    
-    // 淡出衰减：在极远距离处从1淡出到0
-    const float FadeStartDistSq = 4000.0f * 4000.0f; // 40米
-    const float FadeEndDistSq = 5000.0f * 5000.0f;   // 50米
-    
-    if (DistanceSq < FadeStartDistSq)
-    {
-        FadeAtten = 1.0f;
-    }
-    else if (DistanceSq > FadeEndDistSq)
-    {
-        FadeAtten = 0.0f;
-    }
-    else
-    {
-        FadeAtten = (FadeEndDistSq - DistanceSq) / (FadeEndDistSq - FadeStartDistSq);
-    }
-}
+// NOTE: 远处草叶的淡出效果建议通过以下方式实现：
+// 1. 材质中使用 Dithered Opacity (抖动透明) - 避免透明排序问题
+// 2. GPU Culling 中的距离剔除 (MaxVisibleDistance 参数)
+// 3. LOD 系统在远处使用更简化的网格
+// 
+// 避免在 GetViewRelevance 中动态切换 Opaque/Translucent，
+// 因为这会导致渲染排序问题和显著的性能开销。
 
 void FGrassSceneProxy::GetDynamicMeshElements(
     const TArray<const FSceneView*>& Views,
