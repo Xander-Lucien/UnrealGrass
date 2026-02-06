@@ -52,6 +52,19 @@ public:
     float GetWindNoiseStrength() const { return WindNoiseStrength; }
     float GetWindNoiseSpeed() const { return WindNoiseSpeed; }
 
+    // 设置正弦波风参数 (《对马岛之魂》风格)
+    void SetWindWaveParameters(float InWaveSpeed, float InWaveAmplitude, float InSinOffsetRange, float InPushTipForward)
+    {
+        WindWaveSpeed = InWaveSpeed;
+        WindWaveAmplitude = InWaveAmplitude;
+        WindSinOffsetRange = InSinOffsetRange;
+        WindPushTipForward = InPushTipForward;
+    }
+    float GetWindWaveSpeed() const { return WindWaveSpeed; }
+    float GetWindWaveAmplitude() const { return WindWaveAmplitude; }
+    float GetWindSinOffsetRange() const { return WindSinOffsetRange; }
+    float GetWindPushTipForward() const { return WindPushTipForward; }
+
     FRHIShaderResourceView* GetInstancePositionSRV() const { return InstancePositionSRV; }
     FRHIShaderResourceView* GetGrassData0SRV() const { return GrassData0SRV; }
     FRHIShaderResourceView* GetGrassData1SRV() const { return GrassData1SRV; }
@@ -74,6 +87,11 @@ private:
     FVector2f WindNoiseScale = FVector2f(0.001f, 0.001f);
     float WindNoiseStrength = 0.0f;
     float WindNoiseSpeed = 0.0f;
+    // 正弦波风参数
+    float WindWaveSpeed = 2.0f;       // 波动速度
+    float WindWaveAmplitude = 1.0f;   // 波动振幅
+    float WindSinOffsetRange = 0.5f;  // 正弦偏移范围
+    float WindPushTipForward = 0.0f;  // 尖端前推量
 };
 
 /**
@@ -112,4 +130,9 @@ public:
     LAYOUT_FIELD(FShaderParameter, GrassWindNoiseScale);
     LAYOUT_FIELD(FShaderParameter, GrassWindNoiseStrength);
     LAYOUT_FIELD(FShaderParameter, GrassWindNoiseSpeed);
+    // 正弦波风参数
+    LAYOUT_FIELD(FShaderParameter, GrassWindWaveSpeed);
+    LAYOUT_FIELD(FShaderParameter, GrassWindWaveAmplitude);
+    LAYOUT_FIELD(FShaderParameter, GrassWindSinOffsetRange);
+    LAYOUT_FIELD(FShaderParameter, GrassWindPushTipForward);
 };

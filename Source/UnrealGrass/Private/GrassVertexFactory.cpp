@@ -77,6 +77,11 @@ void FGrassVertexFactoryShaderParameters::Bind(const FShaderParameterMap& Parame
     GrassWindNoiseScale.Bind(ParameterMap, TEXT("GrassWindNoiseScale"));
     GrassWindNoiseStrength.Bind(ParameterMap, TEXT("GrassWindNoiseStrength"));
     GrassWindNoiseSpeed.Bind(ParameterMap, TEXT("GrassWindNoiseSpeed"));
+    // 正弦波风参数
+    GrassWindWaveSpeed.Bind(ParameterMap, TEXT("GrassWindWaveSpeed"));
+    GrassWindWaveAmplitude.Bind(ParameterMap, TEXT("GrassWindWaveAmplitude"));
+    GrassWindSinOffsetRange.Bind(ParameterMap, TEXT("GrassWindSinOffsetRange"));
+    GrassWindPushTipForward.Bind(ParameterMap, TEXT("GrassWindPushTipForward"));
 }
 
 void FGrassVertexFactoryShaderParameters::GetElementShaderBindings(
@@ -203,6 +208,27 @@ void FGrassVertexFactoryShaderParameters::GetElementShaderBindings(
     if (GrassWindNoiseSpeed.IsBound())
     {
         ShaderBindings.Add(GrassWindNoiseSpeed, GrassVF->GetWindNoiseSpeed());
+    }
+
+    // 正弦波风参数
+    if (GrassWindWaveSpeed.IsBound())
+    {
+        ShaderBindings.Add(GrassWindWaveSpeed, GrassVF->GetWindWaveSpeed());
+    }
+
+    if (GrassWindWaveAmplitude.IsBound())
+    {
+        ShaderBindings.Add(GrassWindWaveAmplitude, GrassVF->GetWindWaveAmplitude());
+    }
+
+    if (GrassWindSinOffsetRange.IsBound())
+    {
+        ShaderBindings.Add(GrassWindSinOffsetRange, GrassVF->GetWindSinOffsetRange());
+    }
+
+    if (GrassWindPushTipForward.IsBound())
+    {
+        ShaderBindings.Add(GrassWindPushTipForward, GrassVF->GetWindPushTipForward());
     }
 }
 

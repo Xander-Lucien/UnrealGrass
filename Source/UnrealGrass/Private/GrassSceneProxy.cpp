@@ -158,6 +158,12 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
     const FVector2f WindNoiseScale = FVector2f(Component->WindNoiseScale.X, Component->WindNoiseScale.Y);
     const float WindNoiseStrength = Component->WindNoiseStrength;
     const float WindNoiseSpeed = Component->WindNoiseSpeed;
+    
+    // 正弦波风参数
+    const float WindWaveSpeed = Component->WindWaveSpeed;
+    const float WindWaveAmplitude = Component->WindWaveAmplitude;
+    const float WindSinOffsetRange = Component->WindSinOffsetRange;
+    const float WindPushTipForward = Component->WindPushTipForward;
 
     // IMPORTANT: GPU Culling is not yet fully implemented
     // Always use PositionBufferSRV (all instances) for now
@@ -209,6 +215,7 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
     // 设置视角依赖旋转强度 (对马岛之魂风格)
     VertexFactory.SetViewRotationAmount(ViewRotationAmount);
     VertexFactory.SetWindNoiseParameters(WindNoiseTextureRHI, WindNoiseScale, WindNoiseStrength, WindNoiseSpeed);
+    VertexFactory.SetWindWaveParameters(WindWaveSpeed, WindWaveAmplitude, WindSinOffsetRange, WindPushTipForward);
 
     // 初始化 LOD 1 Mesh 数据 (7 顶点简化版)
     InitLOD1GrassBlade();
@@ -240,6 +247,7 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
     // 设置视角依赖旋转强度 (LOD 1 使用相同的值)
     VertexFactoryLOD1.SetViewRotationAmount(ViewRotationAmount);
     VertexFactoryLOD1.SetWindNoiseParameters(WindNoiseTextureRHI, WindNoiseScale, WindNoiseStrength, WindNoiseSpeed);
+    VertexFactoryLOD1.SetWindWaveParameters(WindWaveSpeed, WindWaveAmplitude, WindSinOffsetRange, WindPushTipForward);
 
     // 初始化渲染资源 (LOD 0)
     FStaticMeshVertexBuffers* VertexBuffersPtr = &VertexBuffers;
@@ -566,6 +574,25 @@ void FGrassSceneProxy::PerformGPUCullingRenderThread(FRHICommandListImmediate& R
     }
     bCullingPerformedThisFrame = true;
     LastFrameNumber = CurrentFrameNumber;
+
+    // 计算距离淡出参数，传递给剔除着色器
+    float FadeAtten = 1.0f;
+    FVector BoundsCenter = GetBounds().Origin;
+    float DistanceSq = FVector::DistSquared(FVector(ViewOrigin), BoundsCenter);
+    
+    const float FadeStartDistSq = 4000.0f * 4000.0f; // 40米
+    const float FadeEndDistSq = 5000.0f * 5000.0f;   // 50米
+    
+    if (DistanceSq > FadeStartDistSq)
+    {
+        FadeAtten = FMath::Clamp((FadeEndDistSq - DistanceSq) / (FadeEndDistSq - FadeStartDistSq), 0.0f, 1.0f);
+    }
+    
+    // 如果淡出效果很强，可以提前返回避免不必要的剔除计算
+    if (FadeAtten < 0.1f)
+    {
+        return;
+    }
 
     // 检查 LOD 功能是否完全可用（需要所有必要的 buffer）
     const bool bLODFullyEnabled = bEnableLOD && 
@@ -1120,9 +1147,88 @@ FPrimitiveViewRelevance FGrassSceneProxy::GetViewRelevance(const FSceneView* Vie
 {
     FPrimitiveViewRelevance Result;
     Result.bDrawRelevance = IsShown(View);
+    Result.bRenderInMainPass = ShouldRenderInMainPass();
+    Result.bRenderInDepthPass = ShouldRenderInDepthPass();
+    Result.bRenderCustomDepth = ShouldRenderCustomDepth();
+    Result.bUsesLightingChannels = GetLightingChannelMask() != GetDefaultLightingChannelMask();
+    Result.bTranslucentSelfShadow = bCastVolumetricTranslucentShadow;
+    Result.bVelocityRelevance = DrawsVelocity() && Result.bOpaque && Result.bRenderInMainPass;
+    
+    // 启用动态光照
     Result.bDynamicRelevance = true;
-    Result.bRenderInMainPass = true;
+    
+    // 支持带半透明动态光照（允许混合）
+    Result.bSeparateTranslucencyPassRelevance = true;
+    
+    // 支持光照贴图
+    Result.bStaticRelevance = false; // 不使用静态光照
+    
+    // 支持阴影
+    Result.bShadowRelevance = IsShadowCast(View);
+    
+    // 设置材质相关标志
+    Result.bUsesSingleLayerWaterMaterial = false;
+    
+    // 为远处草叶添加淡出效果
+    // 计算从相机到草叶包围盒中心的距离
+    FVector CameraLocation = View->ViewLocation;
+    FVector BoundsCenter = GetBounds().Origin;
+    float DistanceSq = FVector::DistSquared(CameraLocation, BoundsCenter);
+    
+    // 设置极远距离淡出参数
+    // 超过4000cm时开始淡出，完全淡出在5000cm
+    const float FadeStartDistanceSq = 4000.0f * 4000.0f; // 40米
+    const float FadeEndDistanceSq = 5000.0f * 5000.0f;   // 50米
+    
+    // 计算透明度因子
+    float AlphaFactor = 1.0f;
+    if (DistanceSq > FadeStartDistanceSq)
+    {
+        AlphaFactor = FMath::Clamp((FadeEndDistanceSq - DistanceSq) / (FadeEndDistanceSq - FadeStartDistanceSq), 0.0f, 1.0f);
+    }
+    
+    // 如果Alpha很低，设置透明渲染标志
+    if (AlphaFactor < 1.0f)
+    {
+        Result.bTranslucentRelevance = true;
+        Result.bNormalTranslucencyRelevance = true;
+        Result.bSeparateTranslucencyRelevance = true;
+    }
+    else
+    {
+        // 正常情况下的渲染标志
+        Result.bOpaqueRelevance = true;
+    }
+    
+    // 支持实例化渲染
+    Result.bUsesInstancing = true;
+    
     return Result;
+}
+
+// 修改CalculateDistanceAttenuation函数，添加对极远距离的淡出支持
+void FGrassSceneProxy::CalculateDistanceAttenuation(float DistanceSq, float& LODAtten, float& FadeAtten) const
+{
+    // LOD衰减：在LOD0距离处从1衰减到0.5，用于决定使用LOD0还是LOD1
+    float LOD0DistSq = LOD0Distance * LOD0Distance;
+    LODAtten = FMath::Clamp((LOD0DistSq - DistanceSq) / (LOD0DistSq * 0.1f) + 0.5f, 0.5f, 1.0f);
+    
+    // 淡出衰减：在极远距离处从1淡出到0
+    const float FadeStartDistSq = 4000.0f * 4000.0f; // 40米
+    const float FadeEndDistSq = 5000.0f * 5000.0f;   // 50米
+    
+    if (DistanceSq < FadeStartDistSq)
+    {
+        FadeAtten = 1.0f;
+    }
+    else if (DistanceSq > FadeEndDistSq)
+    {
+        FadeAtten = 0.0f;
+    }
+    else
+    {
+        FadeAtten = (FadeEndDistSq - DistanceSq) / (FadeEndDistSq - FadeStartDistSq);
+    }
 }
 
 void FGrassSceneProxy::GetDynamicMeshElements(
@@ -1227,4 +1333,3 @@ void FGrassSceneProxy::GetDynamicMeshElements(
         }
     }
 }
-

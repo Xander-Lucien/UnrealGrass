@@ -24,26 +24,6 @@ struct FGrassClumpData
 };
 
 // ============================================================================
-// 草叶实例数据结构体 (文档用途, 实际数据分散存储在多个 Buffer 中)
-// 每个草叶实例的属性，用于 Vertex Shader 中的贝塞尔曲线变形
-// ============================================================================
-/*
-* struct FGrassInstanceData
-{
-    FVector3f Position;      // 草叶根部位置
-    float Height;            // 草叶高度
-    float Width;             // 草叶宽度
-    float Tilt;              // 倾斜角度 (弧度)
-    float Bend;              // 弯曲程度
-    float TaperAmount;       // 尖端收缩程度 (0=不收缩, 1=完全收缩成点)
-    FVector2f FacingDirection; // 草叶朝向 (XY平面上的方向)
-    float P1Offset;          // 贝塞尔控制点1偏移
-    float P2Offset;          // 贝塞尔控制点2偏移
-};
-*/
-// ============================================================================
-
-// ============================================================================
 // 草丛簇类型参数结构体 (每种簇类型的完整参数配置)
 // 用户可以为每种簇类型单独设置草叶形态参数
 // ============================================================================
@@ -113,9 +93,8 @@ struct FGrassRenderParameters
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "0.0", ClampMax = "1.0"))
     float CurvedNormalAmount = 0.5f;
 
-    /** 视角依赖旋转强度 (对马岛之魂风格)
-     *  当从侧面观看草叶时，草叶会轻微旋转朝向相机，让草地看起来更饱满
-     *  (0=无旋转, 1=完全旋转朝向相机) */
+    /* 视角依赖旋转强度 
+     *  当从侧面观看草叶时，草叶会轻微旋转朝向相机，让草地看起来更饱满*/
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blade", meta = (ClampMin = "0.0", ClampMax = "1.0"))
     float ViewRotationAmount = 0.3f;
 };
@@ -225,6 +204,24 @@ public:
     /** 噪声滚动速度 */
     UPROPERTY(EditAnywhere, Category = "Grass|Wind", meta = (ClampMin = "0.0"))
     float WindNoiseSpeed = 0.1f;
+
+    // ======== 正弦波风参数 (《对马岛之魂》风格) ========
+
+    /** 风波动速度（正弦波频率）*/
+    UPROPERTY(EditAnywhere, Category = "Grass|Wind", meta = (ClampMin = "0.0", ClampMax = "10.0"))
+    float WindWaveSpeed = 2.0f;
+
+    /** 风波动振幅（草叶摆动幅度）*/
+    UPROPERTY(EditAnywhere, Category = "Grass|Wind", meta = (ClampMin = "0.0", ClampMax = "5.0"))
+    float WindWaveAmplitude = 1.0f;
+
+    /** 正弦偏移范围（让每个草叶有不同的相位，产生波浪效果）*/
+    UPROPERTY(EditAnywhere, Category = "Grass|Wind", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float WindSinOffsetRange = 0.5f;
+
+    /** 尖端前推量（让草叶顶端在风中向前倾斜）*/
+    UPROPERTY(EditAnywhere, Category = "Grass|Wind", meta = (ClampMin = "0.0", ClampMax = "2.0"))
+    float WindPushTipForward = 0.0f;
 
     // ======== 丛簇类型参数 ========
     
