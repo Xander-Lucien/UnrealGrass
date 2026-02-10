@@ -223,6 +223,15 @@ public:
     UPROPERTY(EditAnywhere, Category = "Grass|Wind", meta = (ClampMin = "0.0", ClampMax = "2.0"))
     float WindPushTipForward = 0.0f;
 
+    // ======== 局部风方向旋转 (对马岛之魂风格) ========
+
+    /** 局部风方向旋转强度
+     *  Noise 纹理被映射为局部风方向角度，投影到草叶侧面方向上旋转草叶朝向
+     *  这使得每棵草在风中的倾倒方向不同，而不是所有草都沿同一个风向倒
+     *  0 = 无旋转, 1 = 最大旋转 */
+    UPROPERTY(EditAnywhere, Category = "Grass|Wind", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float LocalWindRotateAmount = 0.5f;
+
     // ======== 丛簇类型参数 ========
     
     /** 草丛簇类型参数数组，每种类型可以有不同的草叶形态 (最多5种) */

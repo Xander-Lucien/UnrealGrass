@@ -164,6 +164,7 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
     const float WindWaveAmplitude = Component->WindWaveAmplitude;
     const float WindSinOffsetRange = Component->WindSinOffsetRange;
     const float WindPushTipForward = Component->WindPushTipForward;
+    const float LocalWindRotateAmount = Component->LocalWindRotateAmount;
 
     // IMPORTANT: GPU Culling is not yet fully implemented
     // Always use PositionBufferSRV (all instances) for now
@@ -216,6 +217,7 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
     VertexFactory.SetViewRotationAmount(ViewRotationAmount);
     VertexFactory.SetWindNoiseParameters(WindNoiseTextureRHI, WindNoiseScale, WindNoiseStrength, WindNoiseSpeed);
     VertexFactory.SetWindWaveParameters(WindWaveSpeed, WindWaveAmplitude, WindSinOffsetRange, WindPushTipForward);
+    VertexFactory.SetLocalWindRotateAmount(LocalWindRotateAmount);
 
     // 初始化 LOD 1 Mesh 数据 (7 顶点简化版)
     InitLOD1GrassBlade();
@@ -248,6 +250,7 @@ FGrassSceneProxy::FGrassSceneProxy(UGrassComponent* Component)
     VertexFactoryLOD1.SetViewRotationAmount(ViewRotationAmount);
     VertexFactoryLOD1.SetWindNoiseParameters(WindNoiseTextureRHI, WindNoiseScale, WindNoiseStrength, WindNoiseSpeed);
     VertexFactoryLOD1.SetWindWaveParameters(WindWaveSpeed, WindWaveAmplitude, WindSinOffsetRange, WindPushTipForward);
+    VertexFactoryLOD1.SetLocalWindRotateAmount(LocalWindRotateAmount);
 
     // 初始化渲染资源 (LOD 0)
     FStaticMeshVertexBuffers* VertexBuffersPtr = &VertexBuffers;

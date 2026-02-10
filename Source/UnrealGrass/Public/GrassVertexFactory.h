@@ -65,6 +65,11 @@ public:
     float GetWindSinOffsetRange() const { return WindSinOffsetRange; }
     float GetWindPushTipForward() const { return WindPushTipForward; }
 
+    // 设置局部风方向旋转强度 (对马岛之魂风格)
+    // Noise 纹理被映射为局部风方向角度，投影到草叶侧面方向上旋转草叶朝向
+    void SetLocalWindRotateAmount(float InAmount) { LocalWindRotateAmount = InAmount; }
+    float GetLocalWindRotateAmount() const { return LocalWindRotateAmount; }
+
     FRHIShaderResourceView* GetInstancePositionSRV() const { return InstancePositionSRV; }
     FRHIShaderResourceView* GetGrassData0SRV() const { return GrassData0SRV; }
     FRHIShaderResourceView* GetGrassData1SRV() const { return GrassData1SRV; }
@@ -92,6 +97,7 @@ private:
     float WindWaveAmplitude = 1.0f;   // 波动振幅
     float WindSinOffsetRange = 0.5f;  // 正弦偏移范围
     float WindPushTipForward = 0.0f;  // 尖端前推量
+    float LocalWindRotateAmount = 0.5f; // 局部风方向旋转强度
 };
 
 /**
@@ -135,4 +141,6 @@ public:
     LAYOUT_FIELD(FShaderParameter, GrassWindWaveAmplitude);
     LAYOUT_FIELD(FShaderParameter, GrassWindSinOffsetRange);
     LAYOUT_FIELD(FShaderParameter, GrassWindPushTipForward);
+    // 局部风方向旋转
+    LAYOUT_FIELD(FShaderParameter, GrassLocalWindRotateAmount);
 };

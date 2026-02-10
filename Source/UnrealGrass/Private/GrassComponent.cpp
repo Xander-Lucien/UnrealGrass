@@ -866,6 +866,7 @@ void UGrassComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
         GET_MEMBER_NAME_CHECKED(UGrassComponent, WindWaveAmplitude),
         GET_MEMBER_NAME_CHECKED(UGrassComponent, WindSinOffsetRange),
         GET_MEMBER_NAME_CHECKED(UGrassComponent, WindPushTipForward),
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, LocalWindRotateAmount),
     };
     
     // 检查是否需要重新生成

@@ -82,6 +82,8 @@ void FGrassVertexFactoryShaderParameters::Bind(const FShaderParameterMap& Parame
     GrassWindWaveAmplitude.Bind(ParameterMap, TEXT("GrassWindWaveAmplitude"));
     GrassWindSinOffsetRange.Bind(ParameterMap, TEXT("GrassWindSinOffsetRange"));
     GrassWindPushTipForward.Bind(ParameterMap, TEXT("GrassWindPushTipForward"));
+    // 局部风方向旋转
+    GrassLocalWindRotateAmount.Bind(ParameterMap, TEXT("GrassLocalWindRotateAmount"));
 }
 
 void FGrassVertexFactoryShaderParameters::GetElementShaderBindings(
@@ -229,6 +231,12 @@ void FGrassVertexFactoryShaderParameters::GetElementShaderBindings(
     if (GrassWindPushTipForward.IsBound())
     {
         ShaderBindings.Add(GrassWindPushTipForward, GrassVF->GetWindPushTipForward());
+    }
+
+    // 局部风方向旋转
+    if (GrassLocalWindRotateAmount.IsBound())
+    {
+        ShaderBindings.Add(GrassLocalWindRotateAmount, GrassVF->GetLocalWindRotateAmount());
     }
 }
 

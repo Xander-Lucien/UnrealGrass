@@ -35,11 +35,18 @@ float2 GrassWindNoiseScale;
 float GrassWindNoiseStrength;
 float GrassWindNoiseSpeed;
 
-// 正弦波风参数 (类似《对马岛之魂》风格)
-float GrassWindWaveSpeed;       // 波动速度
-float GrassWindWaveAmplitude;   // 波动振幅
-float GrassWindSinOffsetRange;  // 正弦偏移范围 (用于每个草叶的相位差)
-float GrassWindPushTipForward;  // 尖端前推量 (让草叶顶端在风中向前倾斜)
+// 风波动参数
+float GrassWindWaveSpeed;       // 波动速度 (小幅抖动的频率)
+float GrassWindWaveAmplitude;   // 波动振幅 (小幅抖动的大小，叠加在持续偏移之上)
+float GrassWindSinOffsetRange;  // 正弦偏移范围 (每个草叶的相位差)
+float GrassWindPushTipForward;  // 尖端前推量 (草叶顶端额外沿风向前倾)
+
+// 局部风方向旋转参数 (对马岛之魂风格)
+// Noise 纹理被映射为一个局部风方向角度，投影到草叶侧面方向上，旋转草叶朝向
+// 这使得每棵草在风中的倾倒方向不同，而不是所有草都沿同一个风向倒
+float GrassLocalWindRotateAmount;  // 局部风方向旋转强度 (0 = 无旋转, 1 = 最大旋转)
+
+
 
 // ============================================================================
 // Bezier Curve Functions
@@ -234,63 +241,111 @@ FGrassDeformResult GetDeformedGrassPositionAndNormal(float3 LocalPos, uint Insta
     float OriginalWidth = 3.445;
     float WidthRatioScale = FinalWidth / (OriginalWidth * 2.0);
     
-    // Build bezier control points
+    // ========== 构建贝塞尔控制点 (《对马岛之魂》风格) ==========
+    // 先计算 P3 (草叶尖端)，然后通过 lerp 计算 P1、P2 的基础位置
+    // 风力只作用于 P2 和 P3，这样草叶在大风时保持贝塞尔曲线的弯曲形态
+    // 而不会因为每个控制点独立的正弦相位而变成正弦波形状
+    
     float TiltAmount = Tilt * Height;
     
     float3 P0 = float3(0, 0, 0);
-    float3 P1 = float3(FacingDir.x * P1Offset * TiltAmount, 
-                       FacingDir.y * P1Offset * TiltAmount, 
-                       Height * 0.33);
-    float3 P2 = float3(FacingDir.x * P2Offset * TiltAmount + FacingDir.x * Bend * Height * 0.5,
-                       FacingDir.y * P2Offset * TiltAmount + FacingDir.y * Bend * Height * 0.5,
-                       Height * 0.66);
     float3 P3 = float3(FacingDir.x * TiltAmount,
                        FacingDir.y * TiltAmount,
                        Height);
-
-    // ========== 正弦波风效果 (类似《对马岛之魂》风格) ==========
-    // 这种方法不会拉长草叶，而是让草叶沿着垂直于倾斜方向的轴摆动
     
-    // 计算用于相位偏移的哈希值 (基于实例位置)
-    float hash = frac(sin(dot(InstancePos.xy, float2(12.9898, 78.233))) * 43758.5453);
+    // P1、P2 通过 lerp 从 P0 到 P3 之间均匀插值得到基础位置
+    float3 P1 = lerp(P0, P3, 0.33);
+    float3 P2 = lerp(P0, P3, 0.66);
     
     // 计算草叶的倾斜方向 (从 P0 到 P3)
     float3 bladeDir = normalize(P3 - P0);
     
     // 计算贝塞尔控制点的偏移方向 (垂直于草叶倾斜方向)
-    // 这使得风效果是侧向摆动而不是前后拉伸
+    // 这使得弯曲和风效果是侧向摆动而不是前后拉伸
     float3 bezCtrlOffsetDir = normalize(cross(bladeDir, float3(0, 0, 1)));
     
-    // 获取 UE 原生风场数据（从 WindDirectionalSource 获取）
+    // P1、P2 受 bend (静态弯曲) 影响
+    P1 += bezCtrlOffsetDir * Bend * P1Offset;
+    P2 += bezCtrlOffsetDir * Bend * P2Offset;
+    
+    // ========== 风效果 (持续偏移 + 小幅波动 + 局部风方向旋转) ==========
+    // 核心思路:
+    // 1. 风力直接沿风向把草叶压弯 (持续偏移)
+    // 2. 叠加一个小幅 sin 波动产生呼吸感
+    // 3. 用 Noise 纹理生成局部风方向，旋转草叶朝向 (对马岛之魂风格)
+    
+    // 每棵草的随机相位 (让波动不同步)
+    float hash = frac(sin(dot(InstancePos.xy, float2(12.9898, 78.233))) * 43758.5453);
+    
+    // 风向 (XY 平面上的单位向量)
     float2 WindDir2D = GrassWindDirection.xy;
     float WindDirLen = length(WindDir2D);
     float2 BaseWindDir = WindDirLen > 0.001 ? (WindDir2D / WindDirLen) : float2(1.0, 0.0);
+    float3 WindDir3D = float3(BaseWindDir.x, BaseWindDir.y, 0.0);
     
-    // Noise 贴图采样 - 产生震荡效果
+    // Noise 贴图采样 - 产生空间变化的风力扰动
     float2 NoiseUV = InstancePos.xy * GrassWindNoiseScale + ResolvedView.RealTime.x * GrassWindNoiseSpeed;
     float NoiseValue = GrassWindNoiseTexture.SampleLevel(GrassWindNoiseSampler, NoiseUV, 0).r;
     float NoiseSigned = (NoiseValue * 2.0 - 1.0) * GrassWindNoiseStrength;
     
+    // ========== 局部风方向旋转 (对马岛之魂风格) ==========
+    // 将 Noise 值映射为一个角度 (-π ~ π)，变成一个 2D 方向
+    // 这样每个空间位置的风方向都不同，草叶倾倒方向会有自然的变化
+    float localWindTheta = ((NoiseValue * 2.0) - 1.0) * 3.14159;
+    float2 localWindDir = float2(cos(localWindTheta), sin(localWindTheta));
+    
+    // 计算草叶的侧面方向 (垂直于朝向)
+    float2 grassSideVec = normalize(float2(-FacingDir.y, FacingDir.x));
+    
+    // 将局部风方向投影到草叶侧面方向上
+    // 当风垂直于草叶朝向时旋转最大，平行时不旋转
+    float rotateBladeFromLocalWind = dot(grassSideVec, localWindDir);
+    
+    // 计算最终旋转角度 (最大旋转 π/2 弧度 = 90°，受强度参数控制)
+    float localWindRotateAngle = rotateBladeFromLocalWind * (3.14159 / 2.0) * GrassLocalWindRotateAmount;
+    
+    // 将旋转应用到 FacingDir 上
+    float localWindCos = cos(localWindRotateAngle);
+    float localWindSin = sin(localWindRotateAngle);
+    FacingDir = float2(
+        FacingDir.x * localWindCos - FacingDir.y * localWindSin,
+        FacingDir.x * localWindSin + FacingDir.y * localWindCos
+    );
+    FacingDir = normalize(FacingDir);
+    
+    // 旋转后需要重新计算倾斜方向和 bezCtrlOffsetDir
+    P3 = float3(FacingDir.x * TiltAmount,
+                FacingDir.y * TiltAmount,
+                Height);
+    P1 = lerp(P0, P3, 0.33);
+    P2 = lerp(P0, P3, 0.66);
+    bladeDir = normalize(P3 - P0);
+    bezCtrlOffsetDir = normalize(cross(bladeDir, float3(0, 0, 1)));
+    P1 += bezCtrlOffsetDir * Bend * P1Offset;
+    P2 += bezCtrlOffsetDir * Bend * P2Offset;
+    
     // 风力 = 基础风强 * (1 + 噪声调制)
     float windForce = GrassWindStrength * (1.0 + NoiseSigned);
     
-    // P1 的正弦波风效果 (位于草叶 33% 高度)
-    float p1WindEffect = sin((ResolvedView.RealTime.x + hash * 2.0 * 3.14159) * GrassWindWaveSpeed + 0.33 * 2.0 * 3.14159 * GrassWindSinOffsetRange) * windForce;
-    p1WindEffect *= 0.33 * GrassWindWaveAmplitude;
+    // --- 持续偏移: 风力直接沿风向推动控制点 ---
+    // P2 (66% 高度) 受较小的持续偏移
+    float3 p2Offset = WindDir3D * windForce * 0.66 * GrassWindWaveAmplitude;
+    // P3 (尖端) 受完整的持续偏移 + 额外尖端前推
+    float3 p3Offset = WindDir3D * windForce * GrassWindWaveAmplitude
+                    + WindDir3D * GrassWindPushTipForward * windForce;
     
-    // P2 的正弦波风效果 (位于草叶 66% 高度)
-    float p2WindEffect = sin((ResolvedView.RealTime.x + hash * 2.0 * 3.14159) * GrassWindWaveSpeed + 0.66 * 2.0 * 3.14159 * GrassWindSinOffsetRange) * windForce;
-    p2WindEffect *= 0.66 * GrassWindWaveAmplitude;
+    // --- 小幅波动: sin 波叠加在持续偏移之上，产生呼吸感 ---
+    // 波动幅度远小于持续偏移，所以草叶不会反向回弹
+    float phase = (ResolvedView.RealTime.x + hash * 6.28318) * GrassWindWaveSpeed;
+    float p2Wave = sin(phase + 0.66 * 6.28318 * GrassWindSinOffsetRange);
+    float p3Wave = sin(phase + 1.0 * 6.28318 * GrassWindSinOffsetRange);
     
-    // P3 的正弦波风效果 (草叶尖端，加上尖端前推)
-    float p3WindEffect = sin((ResolvedView.RealTime.x + hash * 2.0 * 3.14159) * GrassWindWaveSpeed + 1.0 * 2.0 * 3.14159 * GrassWindSinOffsetRange) * windForce;
-    p3WindEffect *= GrassWindWaveAmplitude;
-    p3WindEffect += GrassWindPushTipForward * windForce * (1.0 - Bend);
-    
-    // 应用风效果到控制点 (沿着垂直方向偏移，保持草叶长度不变)
-    P1 += bezCtrlOffsetDir * p1WindEffect;
-    P2 += bezCtrlOffsetDir * p2WindEffect;
-    P3 += bezCtrlOffsetDir * p3WindEffect;
+    // 波动沿 bezCtrlOffsetDir (侧向) 施加，模拟风中的微小摇摆
+    // 幅度 = windForce * 0.15，远小于持续偏移
+    P2 += p2Offset + bezCtrlOffsetDir * p2Wave * windForce * 0.15 * 0.66;
+    P3 += p3Offset + bezCtrlOffsetDir * p3Wave * windForce * 0.15;
+
+
     
     // Get position on bezier curve
     float3 CurvePos = CubicBezier(P0, P1, P2, P3, t);
