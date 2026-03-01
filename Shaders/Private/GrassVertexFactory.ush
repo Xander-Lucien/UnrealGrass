@@ -17,15 +17,10 @@ StructuredBuffer<float> GrassData2;   // P2Offset
 // 用于在 Pixel Shader 中区分 LOD 以便调试验证
 uint GrassLODLevel;
 
-// 弯曲法线程度 (0 = 平面法线, 1 = 完全弯曲)
-// 用于让草叶边缘的法线向外弯曲，产生更柔和的光照效果
-float GrassCurvedNormalAmount;
 
-// 视角依赖旋转强度 (0 = 无旋转, 1 = 完全旋转朝向相机)
-// 当从侧面观看草叶时，草叶会轻微旋转使其正面更多地朝向相机
-// 这个技术来自《对马岛之魂》，可以让草地看起来更饱满
-// 注意：值过大(>0.5)反而会让草地变薄，推荐值为 0.2 ~ 0.4
-float GrassViewRotationAmount;
+float GrassCurvedNormalAmount;// 弯曲法线程度 (0 = 平面法线, 1 = 完全弯曲)
+
+float GrassViewRotationAmount;// 视角依赖旋转强度 (0 = 无旋转, 1 = 完全旋转朝向相机)
 
 float3 GrassWindDirection;
 float GrassWindStrength;

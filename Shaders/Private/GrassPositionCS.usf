@@ -1,26 +1,17 @@
 ﻿// GrassPositionCS.usf
-// GPU Grass Position and Instance Data Generation with Voronoi Texture
-// 使用预生成的 Voronoi Texture 采样获取最近的 Clump (O(1) 复杂度)
+// GPU Grass Position and Instance Data Generation
+// 直接遍历 Clump Buffer 查找最近的 Clump (对马岛之魂方案)
 //
-// 算法改进：
-// 旧方案：每个草叶循环遍历所有 Clump 查找最近的 O(N)
-// 新方案：从预计算的 Voronoi Texture 采样，O(1) 复杂度
-//
-// Voronoi Texture 格式 (RGBA float):
-// R = ClumpIndex (归一化 0-1，需乘以 255)
-// G = ClumpCentre.x (0-1)
-// B = ClumpCentre.y (0-1)
-// A = Distance (归一化)
+// 算法：
+// 每个草叶线程遍历所有 Clump，找到距离最近的 Clump
+// Clump 数量有限（最多 256 个），GPU 并行下遍历成本极低
+// 不依赖 Voronoi 纹理，天然支持任意 Tile 和世界空间扩展
 
 #include "/Engine/Public/Platform.ush"
 
-// 输入 - Voronoi Texture (预计算的 Clump 查找表)
-Texture2D<float4> InVoronoiTexture;
-SamplerState InVoronoiTextureSampler;
-
-// 输入 - 高度图 Texture (用于地形高度采样)
-Texture2D<float> InHeightmapTexture;
-SamplerState InHeightmapTextureSampler;
+// 输入 - Landscape 高度图 Texture (RGBA8, RG=高度, BA=法线)
+Texture2D InLandscapeHeightmap;
+SamplerState InLandscapeHeightmapSampler;
 
 // 输入 Buffers - Clump 属性数据
 // ClumpData0: Centre.x, Centre.y, Direction.x, Direction.y
@@ -50,12 +41,14 @@ float JitterStrength;
 int NumClumps;
 int NumClumpTypes;
 
-// 高度图参数
-float2 HeightmapWorldSize;    // 高度图覆盖的世界空间大小 (X, Y)
-float2 HeightmapWorldOffset;  // 高度图世界空间偏移 (用于对齐地形)
-float HeightmapScale;         // 高度缩放因子
-float HeightmapOffset;        // 高度偏移值
-int bUseHeightmap;            // 是否启用高度图 (0 或 1)
+// Landscape 高度图参数
+float4 HeightmapScaleBias;       // UV 缩放(xy) 和偏移(zw)，从 LandscapeComponent 获取
+float3 LandscapeScale;           // Landscape 的世界缩放 (GetActorScale3D)
+float3 LandscapeLocation;        // Landscape 的世界位置 (GetActorLocation)
+float2 ComponentWorldOrigin;     // Component 在世界空间中的 XY 原点
+float ComponentWorldSizeX;       // Component 在世界空间中的 X 尺寸
+float ComponentWorldSizeY;       // Component 在世界空间中的 Y 尺寸
+int bUseLandscapeHeightmap;      // 是否启用 Landscape 高度图 (0 或 1)
 
 // 全局草叶参数 (所有簇类型共享)
 float TaperAmount;
@@ -126,19 +119,47 @@ FClumpTypeData GetClumpTypeData(int TypeIndex)
 }
 
 // ============================================================================
-// 高度图采样函数
+// Landscape 高度图解码函数 (与引擎 Common.ush 中的 DecodePackedHeight 一致)
 // ============================================================================
-float SampleHeightmap(float2 WorldPos)
+#define TERRAIN_ZSCALE (1.0f/128.0f)
+
+float DecodePackedTwoChannelValue(float2 PackedHeight)
 {
-    // 将世界坐标转换为高度图 UV 坐标
-    float2 HeightmapUV = (WorldPos - HeightmapWorldOffset) / HeightmapWorldSize + 0.5;
-    HeightmapUV = saturate(HeightmapUV);
+    return PackedHeight.x * 255.0 * 256.0 + PackedHeight.y * 255.0;
+}
+
+float DecodeHeightValue(float InValue)
+{
+    return (InValue - 32768.0) * TERRAIN_ZSCALE;
+}
+
+float DecodePackedHeight(float2 PackedHeight)
+{
+    return DecodeHeightValue(DecodePackedTwoChannelValue(PackedHeight));
+}
+
+// ============================================================================
+// Landscape 高度图采样函数
+// ============================================================================
+float SampleLandscapeHeight(float2 WorldPos)
+{
+    // 世界坐标 → Component 局部坐标（以 quad 为单位）
+    float2 LocalQuadPos = (WorldPos - ComponentWorldOrigin) / LandscapeScale.xy;
     
-    // 采样高度图 (使用双线性过滤以获得平滑的高度过渡)
-    float HeightValue = InHeightmapTexture.SampleLevel(InHeightmapTextureSampler, HeightmapUV, 0);
+    // 局部 quad 坐标 → 高度图 UV (使用 HeightmapScaleBias 定位到 Atlas 中的正确区域)
+    // HeightmapScaleBias.xy = UV 缩放 (每个 quad 在 UV 中占多大)
+    // HeightmapScaleBias.zw = UV 偏移 (Component 在 Atlas 中的起始位置)
+    // +0.5 * ScaleBias.xy 是半像素偏移，对齐到纹素中心
+    float2 HeightmapUV = LocalQuadPos * HeightmapScaleBias.xy + HeightmapScaleBias.zw + 0.5 * HeightmapScaleBias.xy;
     
-    // 应用缩放和偏移
-    return HeightValue * HeightmapScale + HeightmapOffset;
+    // 采样 Landscape 高度图纹理 (RGBA8 格式, RG 通道存储 16-bit 高度值)
+    float4 Sample = InLandscapeHeightmap.SampleLevel(InLandscapeHeightmapSampler, HeightmapUV, 0);
+    
+    // 解码高度值: (R*255*256 + G*255 - 32768) / 128 → 得到 local Z
+    float LocalHeight = DecodePackedHeight(Sample.xy);
+    
+    // 转换到世界高度: LocalHeight * Scale.Z + Location.Z
+    return LocalHeight * LandscapeScale.z + LandscapeLocation.z;
 }
 
 // ============================================================================
@@ -154,44 +175,80 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
         return;
     
     int Index = y * GridSize + x;
-    float HalfSize = (GridSize - 1) * Spacing * 0.5;
     
-    // Base position
+    // ========== 位置生成: 当启用 Landscape Heightmap 时铺满整个 Component ==========
+    // 注意: Position 是相对于 Actor 中心的本地坐标
+    // 当 bUseLandscapeHeightmap 时，Actor 已被移动到 Component 中心
+    // 所以 HalfSize = CompWorldSize * 0.5 就能让网格覆盖整个 Component
+    float HalfSizeX = (GridSize - 1) * Spacing * 0.5;
+    float HalfSizeY = HalfSizeX;
+    
+    // 如果启用了 Landscape Heightmap，使用 Component 尺寸作为范围
+    if (bUseLandscapeHeightmap > 0 && ComponentWorldSizeX > 0 && ComponentWorldSizeY > 0)
+    {
+        HalfSizeX = ComponentWorldSizeX * 0.5;
+        HalfSizeY = ComponentWorldSizeY * 0.5;
+    }
+    
+    // Base position (本地坐标，相对于 Actor 中心)
     float3 Position;
-    Position.x = x * Spacing - HalfSize;
-    Position.y = y * Spacing - HalfSize;
+    Position.x = ((float)x / (float)(GridSize - 1)) * HalfSizeX * 2.0 - HalfSizeX;
+    Position.y = ((float)y / (float)(GridSize - 1)) * HalfSizeY * 2.0 - HalfSizeY;
     Position.z = 0;
     
-    // Jitter
-    float2 Jitter = Random2D(float2(x, y)) * Spacing * JitterStrength * 0.5;
+    // Jitter (使用 Spacing 作为 jitter 单元大小)
+    float JitterCellSize = Spacing;
+    if (bUseLandscapeHeightmap > 0 && ComponentWorldSizeX > 0)
+    {
+        // 当铺满 Component 时，jitter 基于网格单元格大小
+        JitterCellSize = ComponentWorldSizeX / (float)(GridSize - 1);
+    }
+    float2 Jitter = Random2D(float2(x, y)) * JitterCellSize * JitterStrength * 0.5;
     Position.x += Jitter.x;
     Position.y += Jitter.y;
     
-    // ========== 从高度图采样获取地形高度 ==========
-    if (bUseHeightmap > 0)
+    // ========== 从 Landscape 高度图采样获取地形高度 ==========
+    // 重要: Position.xy 是本地坐标，需要加上 Component 中心坐标才是世界坐标
+    if (bUseLandscapeHeightmap > 0)
     {
-        Position.z = SampleHeightmap(Position.xy);
+        float2 WorldPosXY = Position.xy + ComponentWorldOrigin + float2(ComponentWorldSizeX, ComponentWorldSizeY) * 0.5;
+        float WorldHeight = SampleLandscapeHeight(WorldPosXY);
+        // 高度保存为相对于 Actor 中心的本地 Z (Actor 已在 Component 中心)
+        Position.z = WorldHeight;
     }
     
-    // UV for Voronoi texture sampling
-    float2 UV = float2(
-        (Position.x + HalfSize) / (HalfSize * 2.0),
-        (Position.y + HalfSize) / (HalfSize * 2.0)
-    );
-    UV = saturate(UV);
+    // ========== 直接遍历 Clump Buffer 查找最近的 Clump ==========
+    // Clump 中心点存储在 UV 空间 (0-1)，需要转换到本地空间进行距离比较
+    float MinDist = 1e10;
+    int NearestClumpIndex = 0;
+    float2 NearestClumpCentreLocal = float2(0, 0);
     
-    // ========== 从 Voronoi Texture 采样获取最近 Clump ==========
-    float4 VoronoiData = InVoronoiTexture.SampleLevel(InVoronoiTextureSampler, UV, 0);
+    int ClumpLimit = min(256, NumClumps);
     
-    // 解析 Voronoi 数据
-    int ClumpIndex = (int)(VoronoiData.r * 255.0 + 0.5); // 从归一化值恢复索引
-    ClumpIndex = clamp(ClumpIndex, 0, NumClumps - 1);    // 确保索引有效
-    float2 ClumpCentre = VoronoiData.gb;                  // 直接从纹理获取 Clump 中心
-    // float VoronoiDistance = VoronoiData.a;             // 距离（如果需要的话）
+    for (int j = 0; j < ClumpLimit; j++)
+    {
+        float4 ClumpData = InClumpData0[j];
+        float2 ClumpCentreUV = ClumpData.xy;
+        
+        // 将 Clump 中心从 UV 空间转换到本地空间
+        float2 ClumpCentreLocal = float2(
+            ClumpCentreUV.x * HalfSizeX * 2.0 - HalfSizeX,
+            ClumpCentreUV.y * HalfSizeY * 2.0 - HalfSizeY
+        );
+        
+        float D = distance(Position.xy, ClumpCentreLocal);
+        
+        if (D < MinDist)
+        {
+            MinDist = D;
+            NearestClumpIndex = j;
+            NearestClumpCentreLocal = ClumpCentreLocal;
+        }
+    }
     
     // 从 ClumpBuffer 读取 Clump 属性
-    float4 ClumpData0 = InClumpData0[ClumpIndex]; // Centre.xy, Direction.xy
-    float4 ClumpData1 = InClumpData1[ClumpIndex]; // HeightScale, WidthScale, WindPhase, ClumpTypeIndex
+    float4 ClumpData0 = InClumpData0[NearestClumpIndex]; // Centre.xy, Direction.xy
+    float4 ClumpData1 = InClumpData1[NearestClumpIndex]; // HeightScale, WidthScale, WindPhase, ClumpTypeIndex
     
     float2 ClumpDirection = ClumpData0.zw;
     float ClumpHeightScale = ClumpData1.x;
@@ -203,14 +260,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     ClumpTypeIndex = clamp(ClumpTypeIndex, 0, NumClumpTypes - 1);
     FClumpTypeData TypeData = GetClumpTypeData(ClumpTypeIndex);
     
-    // World space clump center
-    float2 ClumpCentreWorld = float2(
-        ClumpCentre.x * HalfSize * 2.0 - HalfSize,
-        ClumpCentre.y * HalfSize * 2.0 - HalfSize
-    );
-    
     // Pull to centre - 使用每种类型独立的参数
-    float2 ToCentre = ClumpCentreWorld - Position.xy;
+    float2 ToCentre = NearestClumpCentreLocal - Position.xy;
     Position.x += ToCentre.x * TypeData.PullToCentre;
     Position.y += ToCentre.y * TypeData.PullToCentre;
     

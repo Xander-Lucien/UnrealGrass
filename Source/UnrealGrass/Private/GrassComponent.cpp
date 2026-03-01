@@ -11,6 +11,11 @@
 #include "Engine/Texture2D.h"
 #include "SceneInterface.h"
 #include "Kismet/KismetSystemLibrary.h"
+#include "RenderTargetPool.h"  // For GBlackTexture
+#include "Landscape.h"
+#include "LandscapeProxy.h"
+#include "LandscapeComponent.h"
+#include "EngineUtils.h"  // For TActorIterator
 
 // ============================================================================
 // Compute Shader 定义 - 位置生成
@@ -22,12 +27,9 @@ public:
     SHADER_USE_PARAMETER_STRUCT(FGrassPositionCS, FGlobalShader);
 
     BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-        // Voronoi Texture 输入 (用于 O(1) 查找最近 Clump)
-        SHADER_PARAMETER_SRV(Texture2D<float4>, InVoronoiTexture)
-        SHADER_PARAMETER_SAMPLER(SamplerState, InVoronoiTextureSampler)
-        // 高度图 Texture 输入 (用于地形高度采样)
-        SHADER_PARAMETER_SRV(Texture2D<float>, InHeightmapTexture)
-        SHADER_PARAMETER_SAMPLER(SamplerState, InHeightmapTextureSampler)
+        // Landscape 高度图 Texture 输入 (RGBA8, RG=高度, BA=法线)
+        SHADER_PARAMETER_SRV(Texture2D, InLandscapeHeightmap)
+        SHADER_PARAMETER_SAMPLER(SamplerState, InLandscapeHeightmapSampler)
         // Clump Buffer 输入
         SHADER_PARAMETER_SRV(StructuredBuffer<FVector4f>, InClumpData0) // Centre.xy, Direction.xy
         SHADER_PARAMETER_SRV(StructuredBuffer<FVector4f>, InClumpData1) // HeightScale, WidthScale, WindPhase, Padding
@@ -44,12 +46,14 @@ public:
         SHADER_PARAMETER(int32, NumClumps)
         SHADER_PARAMETER(int32, NumClumpTypes)
         SHADER_PARAMETER(float, TaperAmount) // 全局参数，所有簇类型共享
-        // 高度图参数
-        SHADER_PARAMETER(FVector2f, HeightmapWorldSize)
-        SHADER_PARAMETER(FVector2f, HeightmapWorldOffset)
-        SHADER_PARAMETER(float, HeightmapScale)
-        SHADER_PARAMETER(float, HeightmapOffset)
-        SHADER_PARAMETER(int32, bUseHeightmap)
+        // Landscape 高度图参数
+        SHADER_PARAMETER(FVector4f, HeightmapScaleBias)    // UV 缩放和偏移 (从 LandscapeComponent 获取)
+        SHADER_PARAMETER(FVector3f, LandscapeScale)        // Landscape 的世界缩放 (GetActorScale3D)
+        SHADER_PARAMETER(FVector3f, LandscapeLocation)     // Landscape 的世界位置 (GetActorLocation)
+        SHADER_PARAMETER(FVector2f, ComponentWorldOrigin)   // Component 在世界空间中的 XY 原点
+        SHADER_PARAMETER(float, ComponentWorldSizeX)        // Component 在世界空间中的 X 尺寸
+        SHADER_PARAMETER(float, ComponentWorldSizeY)        // Component 在世界空间中的 Y 尺寸
+        SHADER_PARAMETER(int32, bUseLandscapeHeightmap)     // 是否启用 Landscape 高度图
     END_SHADER_PARAMETER_STRUCT()
 
     static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -84,29 +88,7 @@ public:
 
 IMPLEMENT_GLOBAL_SHADER(FClumpGenerationCS, "/Plugin/UnrealGrass/Private/GrassClumpCS.usf", "MainCS", SF_Compute);
 
-// ============================================================================
-// Compute Shader 定义 - Voronoi Texture 生成
-// ============================================================================
-class FVoronoiGenerationCS : public FGlobalShader
-{
-public:
-    DECLARE_GLOBAL_SHADER(FVoronoiGenerationCS);
-    SHADER_USE_PARAMETER_STRUCT(FVoronoiGenerationCS, FGlobalShader);
 
-    BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-        SHADER_PARAMETER_SRV(StructuredBuffer<float4>, InClumpData0) // Centre.xy, Direction.xy
-        SHADER_PARAMETER_UAV(RWTexture2D<float4>, OutVoronoiTexture)
-        SHADER_PARAMETER(int32, NumClumps)
-        SHADER_PARAMETER(int32, TextureSize)
-    END_SHADER_PARAMETER_STRUCT()
-
-    static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-    {
-        return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
-    }
-};
-
-IMPLEMENT_GLOBAL_SHADER(FVoronoiGenerationCS, "/Plugin/UnrealGrass/Private/GrassVoronoiCS.usf", "MainCS", SF_Compute);
 
 // ============================================================================
 // UGrassComponent 实现
@@ -207,40 +189,127 @@ void UGrassComponent::GenerateGrass()
     // Clump 参数
     int32 CapturedNumClumps = NumClumps;
     int32 CapturedNumClumpTypes = GetNumClumpTypes();
-    int32 CapturedVoronoiTextureSize = VoronoiTextureSize;
     
     // 全局渲染参数
     float CapturedTaperAmount = RenderParameters.TaperAmount;
     
-    // 高度图参数
-    bool CapturedUseHeightmap = bUseHeightmap && HeightmapTexture != nullptr;
-    FVector2f CapturedHeightmapWorldSize = FVector2f(HeightmapWorldSize.X, HeightmapWorldSize.Y);
-    FVector2f CapturedHeightmapWorldOffset = FVector2f(HeightmapWorldOffset.X, HeightmapWorldOffset.Y);
-    float CapturedHeightmapScale = HeightmapScale;
-    float CapturedHeightmapOffset = HeightmapOffset;
+    // ========== Landscape Heightmap 自动获取 ==========
+    bool CapturedUseLandscapeHeightmap = false;
+    FVector4f CapturedHeightmapScaleBias = FVector4f(0, 0, 0, 0);
+    FVector3f CapturedLandscapeScale = FVector3f(100.0f, 100.0f, 100.0f);
+    FVector3f CapturedLandscapeLocation = FVector3f(0, 0, 0);
+    FVector2f CapturedComponentWorldOrigin = FVector2f(0, 0);
+    float CapturedComponentWorldSizeX = 0.0f;
+    float CapturedComponentWorldSizeY = 0.0f;
+    FTextureResource* HeightmapResource = nullptr;
     
-    // 获取高度图纹理资源（在游戏线程获取）
-    FTextureResource* HeightmapResource = CapturedUseHeightmap ? HeightmapTexture->GetResource() : nullptr;
+    if (bUseLandscapeHeightmap && GetWorld())
+    {
+        FVector ActorLocation = GetOwner() ? GetOwner()->GetActorLocation() : GetComponentLocation();
+        
+        // 遍历场景中的 Landscape Proxy，查找覆盖当前位置的 Component
+        for (TActorIterator<ALandscapeProxy> It(GetWorld()); It; ++It)
+        {
+            ALandscapeProxy* LandscapeProxy = *It;
+            if (!LandscapeProxy) continue;
+            
+            FVector LandscapeScale = LandscapeProxy->GetActorScale3D();
+            FVector LandscapeLoc = LandscapeProxy->GetActorLocation();
+            
+            // 遍历所有 LandscapeComponent 找到包含当前位置的那个
+            for (ULandscapeComponent* LandscapeComp : LandscapeProxy->LandscapeComponents)
+            {
+                if (!LandscapeComp || !LandscapeComp->GetHeightmap()) continue;
+                
+                // Component 在世界空间中的原点 (SectionBase * Scale + LandscapeLoc)
+                float CompWorldX = LandscapeComp->SectionBaseX * LandscapeScale.X + LandscapeLoc.X;
+                float CompWorldY = LandscapeComp->SectionBaseY * LandscapeScale.Y + LandscapeLoc.Y;
+                float CompWorldSizeX = LandscapeComp->ComponentSizeQuads * LandscapeScale.X;
+                float CompWorldSizeY = LandscapeComp->ComponentSizeQuads * LandscapeScale.Y;
+                
+                // 检查 Actor 位置是否在这个 Component 的范围内
+                if (ActorLocation.X >= CompWorldX && ActorLocation.X <= CompWorldX + CompWorldSizeX &&
+                    ActorLocation.Y >= CompWorldY && ActorLocation.Y <= CompWorldY + CompWorldSizeY)
+                {
+                    // 找到了！获取高度图参数
+                    CapturedUseLandscapeHeightmap = true;
+                    CapturedHeightmapScaleBias = FVector4f(
+                        LandscapeComp->HeightmapScaleBias.X,
+                        LandscapeComp->HeightmapScaleBias.Y,
+                        LandscapeComp->HeightmapScaleBias.Z,
+                        LandscapeComp->HeightmapScaleBias.W
+                    );
+                    CapturedLandscapeScale = FVector3f(LandscapeScale.X, LandscapeScale.Y, LandscapeScale.Z);
+                    CapturedLandscapeLocation = FVector3f(LandscapeLoc.X, LandscapeLoc.Y, LandscapeLoc.Z);
+                    CapturedComponentWorldOrigin = FVector2f(CompWorldX, CompWorldY);
+                    CapturedComponentWorldSizeX = CompWorldSizeX;
+                    CapturedComponentWorldSizeY = CompWorldSizeY;
+                    HeightmapResource = LandscapeComp->GetHeightmap()->GetResource();
+                    
+                    // ========== 自动铺满整个 Landscape Component ==========
+                    // 将 Actor 移动到 Component 中心，使草叶网格完全覆盖 Component
+                    FVector CompCenterWorld = FVector(
+                        CompWorldX + CompWorldSizeX * 0.5f,
+                        CompWorldY + CompWorldSizeY * 0.5f,
+                        0.0f  // Z 设为 0，这样 Position.z 可以直接存储世界高度
+                    );
+                    if (GetOwner())
+                    {
+                        GetOwner()->SetActorLocation(CompCenterWorld);
+                    }
+                    
+                    // 根据 Component 尺寸自动计算 GridSize，使网格铺满 Component
+                    // GridSize * Spacing 需要覆盖 CompWorldSize
+                    // 保持用户设置的 Spacing (草叶密度)，自动计算所需的 GridSize
+                    CapturedGridSize = FMath::CeilToInt(FMath::Max(CompWorldSizeX, CompWorldSizeY) / CapturedSpacing) + 1;
+                    CapturedGridSize = FMath::Clamp(CapturedGridSize, 2, 1024);
+                    InstanceCount = CapturedGridSize * CapturedGridSize;
+                    
+                    UE_LOG(LogTemp, Log, TEXT("Found Landscape Component at SectionBase(%d, %d), WorldOrigin(%.1f, %.1f), Size(%.1f x %.1f)"),
+                        LandscapeComp->SectionBaseX, LandscapeComp->SectionBaseY,
+                        CompWorldX, CompWorldY, CompWorldSizeX, CompWorldSizeY);
+                    UE_LOG(LogTemp, Log, TEXT("  Auto-fill: Actor moved to (%.1f, %.1f), GridSize=%d, Spacing=%.1f, Total=%d instances"),
+                        CompCenterWorld.X, CompCenterWorld.Y, CapturedGridSize, CapturedSpacing, InstanceCount);
+                    UE_LOG(LogTemp, Log, TEXT("  HeightmapScaleBias: (%.6f, %.6f, %.6f, %.6f)"),
+                        CapturedHeightmapScaleBias.X, CapturedHeightmapScaleBias.Y,
+                        CapturedHeightmapScaleBias.Z, CapturedHeightmapScaleBias.W);
+                    UE_LOG(LogTemp, Log, TEXT("  LandscapeScale: (%.1f, %.1f, %.1f), Location: (%.1f, %.1f, %.1f)"),
+                        LandscapeScale.X, LandscapeScale.Y, LandscapeScale.Z,
+                        LandscapeLoc.X, LandscapeLoc.Y, LandscapeLoc.Z);
+                    break;
+                }
+            }
+            if (CapturedUseLandscapeHeightmap) break;
+        }
+        
+        if (!CapturedUseLandscapeHeightmap)
+        {
+            UE_LOG(LogTemp, Warning, TEXT("GrassComponent: No Landscape Component found at location (%.1f, %.1f, %.1f). Heightmap disabled."),
+                ActorLocation.X, ActorLocation.Y, ActorLocation.Z);
+        }
+    }
     
     // 复制 ClumpTypes 数组供渲染线程使用
     TArray<FClumpTypeParameters> CapturedClumpTypes = ClumpTypes;
 
-    UE_LOG(LogTemp, Log, TEXT("Generating %d grass positions on GPU (FrustumCulling=%d, NumClumps=%d, VoronoiSize=%d, UseHeightmap=%d)..."), 
-        InstanceCount, CapturedEnableFrustumCulling ? 1 : 0, CapturedNumClumps, CapturedVoronoiTextureSize, CapturedUseHeightmap ? 1 : 0);
+    UE_LOG(LogTemp, Log, TEXT("Generating %d grass positions on GPU (FrustumCulling=%d, NumClumps=%d, UseLandscapeHeightmap=%d)..."), 
+        InstanceCount, CapturedEnableFrustumCulling ? 1 : 0, CapturedNumClumps, CapturedUseLandscapeHeightmap ? 1 : 0);
 
     ENQUEUE_RENDER_COMMAND(GenerateGrassPositions)(
         [this, CapturedGridSize, CapturedSpacing, CapturedJitterStrength, 
          CapturedUseIndirectDraw, CapturedEnableFrustumCulling,
-         CapturedNumClumps, CapturedNumClumpTypes, CapturedVoronoiTextureSize,
+         CapturedNumClumps, CapturedNumClumpTypes,
          CapturedTaperAmount, CapturedClumpTypes,
-         CapturedUseHeightmap, CapturedHeightmapWorldSize, CapturedHeightmapWorldOffset,
-         CapturedHeightmapScale, CapturedHeightmapOffset, HeightmapResource](FRHICommandListImmediate& RHICmdList)
+         CapturedUseLandscapeHeightmap, CapturedHeightmapScaleBias,
+         CapturedLandscapeScale, CapturedLandscapeLocation,
+         CapturedComponentWorldOrigin, CapturedComponentWorldSizeX, CapturedComponentWorldSizeY,
+         HeightmapResource](FRHICommandListImmediate& RHICmdList)
         {
             int32 Total = CapturedGridSize * CapturedGridSize;
 
-            // ========== 获取高度图 SRV ==========
+            // ========== 获取 Landscape 高度图 SRV ==========
             FShaderResourceViewRHIRef LocalHeightmapSRV;
-            if (CapturedUseHeightmap && HeightmapResource)
+            if (CapturedUseLandscapeHeightmap && HeightmapResource)
             {
                 FTextureRHIRef HeightmapRHI = HeightmapResource->TextureRHI;
                 if (HeightmapRHI.IsValid())
@@ -250,7 +319,7 @@ void UGrassComponent::GenerateGrass()
                         FRHIViewDesc::CreateTextureSRV().SetDimensionFromTexture(HeightmapRHI)
                     );
                     HeightmapTextureSRV = LocalHeightmapSRV;
-                    UE_LOG(LogTemp, Log, TEXT("Created Heightmap SRV for terrain height sampling"));
+                    UE_LOG(LogTemp, Log, TEXT("Created Landscape Heightmap SRV for terrain height sampling"));
                 }
             }
 
@@ -310,47 +379,6 @@ void UGrassComponent::GenerateGrass()
 
                 UE_LOG(LogTemp, Log, TEXT("Created ClumpBuffer with %d clumps"), 
                     CapturedNumClumps);
-            }
-
-            // ========== 创建 Voronoi Texture (预计算 Clump 查找表) ==========
-            // 使用 Compute Shader 渲染 Voronoi 图到纹理，后续草叶生成时 O(1) 采样
-            {
-                // 创建 Voronoi Texture (RGBA32F 格式)
-                const FRHITextureCreateDesc VoronoiTextureDesc = FRHITextureCreateDesc::Create2D(
-                    TEXT("GrassVoronoiTexture"),
-                    CapturedVoronoiTextureSize,
-                    CapturedVoronoiTextureSize,
-                    PF_A32B32G32R32F)  // 32位浮点精度确保 Clump Index 准确
-                    .SetFlags(ETextureCreateFlags::UAV | ETextureCreateFlags::ShaderResource)
-                    .SetInitialState(ERHIAccess::UAVCompute);
-                
-                VoronoiTexture = RHICmdList.CreateTexture(VoronoiTextureDesc);
-                
-                // 创建 UAV 用于 Voronoi CS 写入 (使用新版 FRHIViewDesc API)
-                VoronoiTextureUAV = RHICmdList.CreateUnorderedAccessView(VoronoiTexture, FRHIViewDesc::CreateTextureUAV().SetDimensionFromTexture(VoronoiTexture));
-                
-                // 执行 Voronoi 生成 Compute Shader
-                TShaderMapRef<FVoronoiGenerationCS> VoronoiCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
-                FVoronoiGenerationCS::FParameters VoronoiParams;
-                VoronoiParams.InClumpData0 = ClumpBufferSRV;
-                VoronoiParams.OutVoronoiTexture = VoronoiTextureUAV;
-                VoronoiParams.NumClumps = CapturedNumClumps;
-                VoronoiParams.TextureSize = CapturedVoronoiTextureSize;
-                
-                FComputeShaderUtils::Dispatch(RHICmdList, VoronoiCS, VoronoiParams,
-                    FIntVector(
-                        FMath::DivideAndRoundUp(CapturedVoronoiTextureSize, 8),
-                        FMath::DivideAndRoundUp(CapturedVoronoiTextureSize, 8),
-                        1));
-                
-                // 转换到 SRV 状态供后续采样
-                RHICmdList.Transition(FRHITransitionInfo(VoronoiTexture, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
-                
-                // 创建 SRV (使用新版 FRHIViewDesc API)
-                VoronoiTextureSRV = RHICmdList.CreateShaderResourceView(VoronoiTexture, FRHIViewDesc::CreateTextureSRV().SetDimensionFromTexture(VoronoiTexture));
-                
-                UE_LOG(LogTemp, Log, TEXT("Created Voronoi Texture (%dx%d) for O(1) Clump lookup"), 
-                    CapturedVoronoiTextureSize, CapturedVoronoiTextureSize);
             }
 
             // ========== 创建所有实例位置的 StructuredBuffer ==========
@@ -472,20 +500,19 @@ void UGrassComponent::GenerateGrass()
             // ========== 执行位置生成 Compute Shader ==========
             TShaderMapRef<FGrassPositionCS> CS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
             FGrassPositionCS::FParameters Params;
-            // Voronoi Texture 输入 (用于 O(1) 查找最近 Clump)
-            Params.InVoronoiTexture = VoronoiTextureSRV;
-            Params.InVoronoiTextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-            // 高度图 Texture 输入
-            if (CapturedUseHeightmap && LocalHeightmapSRV.IsValid())
+            // Landscape 高度图 Texture 输入
+            if (CapturedUseLandscapeHeightmap && LocalHeightmapSRV.IsValid())
             {
-                Params.InHeightmapTexture = LocalHeightmapSRV;
+                Params.InLandscapeHeightmap = LocalHeightmapSRV;
             }
             else
             {
-                // 使用 Voronoi Texture 作为占位符（不会被实际使用，因为 bUseHeightmap = 0）
-                Params.InHeightmapTexture = VoronoiTextureSRV;
+                // 使用黑色纹理作为占位符（不会被实际使用，因为 bUseLandscapeHeightmap = 0）
+                Params.InLandscapeHeightmap = RHICmdList.CreateShaderResourceView(
+                    GBlackTexture->TextureRHI,
+                    FRHIViewDesc::CreateTextureSRV().SetDimensionFromTexture(GBlackTexture->TextureRHI));
             }
-            Params.InHeightmapTextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+            Params.InLandscapeHeightmapSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
             // ClumpBuffer 输入
             Params.InClumpData0 = ClumpBufferSRV;
             Params.InClumpData1 = ClumpData1BufferSRV;
@@ -502,12 +529,14 @@ void UGrassComponent::GenerateGrass()
             Params.NumClumps = CapturedNumClumps;
             Params.NumClumpTypes = CapturedNumClumpTypes;
             Params.TaperAmount = CapturedTaperAmount;
-            // 高度图参数
-            Params.HeightmapWorldSize = CapturedHeightmapWorldSize;
-            Params.HeightmapWorldOffset = CapturedHeightmapWorldOffset;
-            Params.HeightmapScale = CapturedHeightmapScale;
-            Params.HeightmapOffset = CapturedHeightmapOffset;
-            Params.bUseHeightmap = CapturedUseHeightmap ? 1 : 0;
+            // Landscape 高度图参数
+            Params.HeightmapScaleBias = CapturedHeightmapScaleBias;
+            Params.LandscapeScale = CapturedLandscapeScale;
+            Params.LandscapeLocation = CapturedLandscapeLocation;
+            Params.ComponentWorldOrigin = CapturedComponentWorldOrigin;
+            Params.ComponentWorldSizeX = CapturedComponentWorldSizeX;
+            Params.ComponentWorldSizeY = CapturedComponentWorldSizeY;
+            Params.bUseLandscapeHeightmap = CapturedUseLandscapeHeightmap ? 1 : 0;
 
             FComputeShaderUtils::Dispatch(RHICmdList, CS, Params,
                 FIntVector(
@@ -804,7 +833,10 @@ FPrimitiveSceneProxy* UGrassComponent::CreateSceneProxy()
 FBoxSphereBounds UGrassComponent::CalcBounds(const FTransform& LocalToWorld) const
 {
     float HalfSize = GridSize * Spacing * 0.5f + 100.0f;
-    FBox Box(FVector(-HalfSize, -HalfSize, -10), FVector(HalfSize, HalfSize, 100));
+    // 使用更大的 Z 范围以容纳地形高度变化
+    float ZMin = -5000.0f;
+    float ZMax = 5000.0f;
+    FBox Box(FVector(-HalfSize, -HalfSize, ZMin), FVector(HalfSize, HalfSize, ZMax));
     return FBoxSphereBounds(Box).TransformBy(LocalToWorld);
 }
 
@@ -845,17 +877,11 @@ void UGrassComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
         GET_MEMBER_NAME_CHECKED(UGrassComponent, JitterStrength),
         // 簇参数
         GET_MEMBER_NAME_CHECKED(UGrassComponent, NumClumps),
-        GET_MEMBER_NAME_CHECKED(UGrassComponent, VoronoiTextureSize),
         GET_MEMBER_NAME_CHECKED(UGrassComponent, ClumpTypes),
         // 渲染参数
         GET_MEMBER_NAME_CHECKED(UGrassComponent, RenderParameters),
         // 高度图参数
-        GET_MEMBER_NAME_CHECKED(UGrassComponent, bUseHeightmap),
-        GET_MEMBER_NAME_CHECKED(UGrassComponent, HeightmapTexture),
-        GET_MEMBER_NAME_CHECKED(UGrassComponent, HeightmapWorldSize),
-        GET_MEMBER_NAME_CHECKED(UGrassComponent, HeightmapWorldOffset),
-        GET_MEMBER_NAME_CHECKED(UGrassComponent, HeightmapScale),
-        GET_MEMBER_NAME_CHECKED(UGrassComponent, HeightmapOffset),
+        GET_MEMBER_NAME_CHECKED(UGrassComponent, bUseLandscapeHeightmap),
         // 风场噪声参数
         GET_MEMBER_NAME_CHECKED(UGrassComponent, WindNoiseTexture),
         GET_MEMBER_NAME_CHECKED(UGrassComponent, WindNoiseScale),

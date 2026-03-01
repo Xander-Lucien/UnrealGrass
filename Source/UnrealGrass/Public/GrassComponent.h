@@ -8,6 +8,8 @@
 #include "GrassComponent.generated.h"
 
 class UStaticMesh;
+class ALandscapeProxy;
+class ULandscapeComponent;
 
 // ============================================================================
 // 草丛簇实例数据结构体 (GPU Buffer 格式)
@@ -163,29 +165,9 @@ public:
 
     // ======== 地形高度图设置 ========
     
-    /** 是否启用高度图，让草叶适应地形 */
+    /** 是否启用 Landscape Heightmap，自动从所在的 Landscape Component 获取高度数据 */
     UPROPERTY(EditAnywhere, Category = "Grass|Heightmap")
-    bool bUseHeightmap = false;
-
-    /** 高度图纹理（R通道存储归一化高度值 0-1）*/
-    UPROPERTY(EditAnywhere, Category = "Grass|Heightmap", meta = (EditCondition = "bUseHeightmap"))
-    UTexture2D* HeightmapTexture = nullptr;
-
-    /** 高度图覆盖的世界空间大小 (X, Y) 厘米 */
-    UPROPERTY(EditAnywhere, Category = "Grass|Heightmap", meta = (EditCondition = "bUseHeightmap"))
-    FVector2D HeightmapWorldSize = FVector2D(10000.0, 10000.0);
-
-    /** 高度图世界空间偏移（用于对齐地形）*/
-    UPROPERTY(EditAnywhere, Category = "Grass|Heightmap", meta = (EditCondition = "bUseHeightmap"))
-    FVector2D HeightmapWorldOffset = FVector2D(0.0, 0.0);
-
-    /** 高度图缩放因子（高度图值乘以此值得到实际高度）*/
-    UPROPERTY(EditAnywhere, Category = "Grass|Heightmap", meta = (EditCondition = "bUseHeightmap"))
-    float HeightmapScale = 1000.0f;
-
-    /** 高度偏移值（添加到最终高度）*/
-    UPROPERTY(EditAnywhere, Category = "Grass|Heightmap", meta = (EditCondition = "bUseHeightmap"))
-    float HeightmapOffset = 0.0f;
+    bool bUseLandscapeHeightmap = false;
 
     // ======== 风场扰动噪声设置 ========
 
@@ -241,10 +223,6 @@ public:
     /** 丛簇数量 */
     UPROPERTY(EditAnywhere, Category = "Grass|Clumping", meta = (ClampMin = "1", ClampMax = "256"))
     int32 NumClumps = 50;
-
-    /** Voronoi Texture 分辨率（越高精度越高，但内存占用也越大）*/
-    UPROPERTY(EditAnywhere, Category = "Grass|Clumping", meta = (ClampMin = "64", ClampMax = "1024"))
-    int32 VoronoiTextureSize = 256;
 
     /** 草叶模型，如果为空则使用默认高质量草叶 */
     UPROPERTY(EditAnywhere, Category = "Grass")
@@ -347,15 +325,8 @@ public:
     FBufferRHIRef ClumpTypeParamsBuffer;
     FShaderResourceViewRHIRef ClumpTypeParamsBufferSRV;
 
-    // ======== Voronoi Texture 数据 ========
-    // 预计算的 Voronoi 查找纹理，用于 O(1) 复杂度获取最近 Clump
-    // R = ClumpIndex (归一化), G = CentreX, B = CentreY, A = Distance
-    FTextureRHIRef VoronoiTexture;
-    FShaderResourceViewRHIRef VoronoiTextureSRV;
-    FUnorderedAccessViewRHIRef VoronoiTextureUAV;
-
-    // ======== 高度图 Texture 数据 ========
-    // 用于地形高度采样的纹理 SRV（从 UTexture2D 获取）
+    // ======== Landscape 高度图 Texture 数据 ========
+    // 从 Landscape Component 自动获取的高度图 SRV
     FShaderResourceViewRHIRef HeightmapTextureSRV;
 
     // ======== 辅助方法 ========
